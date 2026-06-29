@@ -1,34 +1,6 @@
 import os
 import httpx
 import pandas as pd
-
-# huggingface_hub >= 1.0 removed HfFolder; Gradio 4.x imports it for OAuth.
-# We don't use HF OAuth, so a stub is sufficient.
-import huggingface_hub as _hfhub
-if not hasattr(_hfhub, "HfFolder"):
-    class _HfFolder:
-        @staticmethod
-        def get_token(): return None
-        @staticmethod
-        def save_token(_token): pass
-        @staticmethod
-        def delete_token(): pass
-    _hfhub.HfFolder = _HfFolder
-
-# gradio_client bug: schema['additionalProperties'] can be True (bool), causing
-# "argument of type 'bool' is not iterable" in get_api_info() on every page load.
-# Wrap the function to return "Any" on TypeError instead of crashing the server.
-import gradio_client.utils as _gcu
-_orig_schema_to_type = _gcu.json_schema_to_python_type
-
-def _safe_schema_to_type(schema, defs=None):
-    try:
-        return _orig_schema_to_type(schema, defs)
-    except TypeError:
-        return "Any"
-
-_gcu.json_schema_to_python_type = _safe_schema_to_type
-
 import gradio as gr
 
 API_URL = "http://localhost:8000/audit/run"
@@ -88,9 +60,11 @@ def run_audit(file, progress=gr.Progress()):
         gr.Warning("Please upload a file before running the audit.")
         return _EMPTY_DF.copy(), ""
     progress(0.1, desc="Uploading document...")
-    filename = os.path.basename(file.name)
+    # Gradio 5 returns filepath as str; Gradio 4 returned a file-like object
+    filepath = file if isinstance(file, str) else file.name
+    filename = os.path.basename(filepath)
     mime = "application/pdf" if filename.lower().endswith(".pdf") else "text/plain"
-    return _call_audit_api(file.name, filename, mime, progress)
+    return _call_audit_api(filepath, filename, mime, progress)
 
 
 def run_sample_audit(progress=gr.Progress()):
@@ -591,7 +565,7 @@ with gr.Blocks(title="AuditPilot", theme=_THEME, css=_CSS) as demo:
         inputs=[df_out],
         outputs=[export_file],
     ).then(
-        fn=lambda: gr.File(visible=True),
+        fn=lambda: gr.update(visible=True),
         outputs=[export_file],
     )
 
@@ -600,7 +574,7 @@ with gr.Blocks(title="AuditPilot", theme=_THEME, css=_CSS) as demo:
         inputs=[report_out, df_out],
         outputs=[pdf_file_out],
     ).then(
-        fn=lambda: gr.File(visible=True),
+        fn=lambda: gr.update(visible=True),
         outputs=[pdf_file_out],
     )
 
