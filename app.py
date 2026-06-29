@@ -2,8 +2,9 @@ import os
 import httpx
 import pandas as pd
 
-# huggingface_hub >=1.0 removed HfFolder; Gradio 4.x imports it in oauth.py.
-# Patch the module before importing gradio so the import doesn't fail.
+# ── Compatibility patches (must run before `import gradio`) ───────────────────
+
+# 1. huggingface_hub >=1.0 removed HfFolder; Gradio 4.x oauth.py imports it.
 import huggingface_hub as _hfhub
 if not hasattr(_hfhub, "HfFolder"):
     class _HfFolder:
@@ -15,8 +16,42 @@ if not hasattr(_hfhub, "HfFolder"):
         def delete_token(): pass
     _hfhub.HfFolder = _HfFolder
 
-# gradio_client bug: schema['additionalProperties'] can be True (bool), causing
-# TypeError in json_schema_to_python_type() on every page load.
+# 2. Newer Jinja2 + Starlette passes a mutable dict as the Jinja2 template
+# cache_key, making it unhashable and crashing every page render. Patch the
+# LRUCache class so unhashable keys are treated as permanent cache misses
+# (templates load from disk each time — slightly slower but fully functional).
+import jinja2.utils as _jinja2_utils
+
+_orig_lru_getitem = _jinja2_utils.LRUCache.__getitem__
+_orig_lru_get     = _jinja2_utils.LRUCache.get
+_orig_lru_setitem = _jinja2_utils.LRUCache.__setitem__
+
+def _safe_lru_getitem(self, key):
+    try:
+        return _orig_lru_getitem(self, key)
+    except TypeError:
+        raise KeyError(key)
+
+def _safe_lru_get(self, key, default=None):
+    try:
+        return _orig_lru_get(self, key, default)
+    except TypeError:
+        return default
+
+def _safe_lru_setitem(self, key, value):
+    try:
+        _orig_lru_setitem(self, key, value)
+    except TypeError:
+        pass  # silently skip caching unhashable keys
+
+_jinja2_utils.LRUCache.__getitem__ = _safe_lru_getitem
+_jinja2_utils.LRUCache.get        = _safe_lru_get
+_jinja2_utils.LRUCache.__setitem__ = _safe_lru_setitem
+
+import gradio as gr
+
+# 3. gradio_client bug: schema['additionalProperties'] can be True (bool),
+# causing TypeError in json_schema_to_python_type() on every page load.
 import gradio_client.utils as _gcu
 _orig_schema_to_type = _gcu.json_schema_to_python_type
 
@@ -27,8 +62,6 @@ def _safe_schema_to_type(schema, defs=None):
         return "Any"
 
 _gcu.json_schema_to_python_type = _safe_schema_to_type
-
-import gradio as gr
 
 API_URL = "http://localhost:8000/audit/run"
 SAMPLE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "sample_payroll_register.pdf")
