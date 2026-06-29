@@ -1,4 +1,10 @@
 gradio>=4.44.1,<5.0
+# Pin the Starlette/FastAPI/Jinja2 stack to versions Gradio 4.44.1 was built
+# and tested against. In newer Starlette (0.40+) some APIs changed (e.g. dict
+# returned where str was expected) causing AttributeError inside Gradio 4.x.
+starlette==0.37.2
+fastapi==0.110.0
+jinja2==3.1.2
 fastapi
 uvicorn
 langgraph
