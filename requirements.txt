@@ -1,5 +1,5 @@
 gradio>=4.44.1,<5.0
-pyaudioop
+audioop-lts
 fastapi
 uvicorn
 langgraph
