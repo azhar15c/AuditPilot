@@ -605,6 +605,35 @@ with gr.Blocks(title="AuditPilot", theme=_THEME, css=_CSS) as demo:
     )
 
 
+def _ensure_knowledge_base() -> None:
+    """Ingest RAG source PDFs if ChromaDB is empty.
+    Runs automatically on HuggingFace Spaces where chroma_db/ is not committed."""
+    import chromadb as _cdb
+    chroma_path = os.path.join(os.path.dirname(__file__), "chroma_db")
+    try:
+        col = _cdb.PersistentClient(path=chroma_path).get_or_create_collection("ncci_codes")
+        if col.count() > 0:
+            return
+    except Exception:
+        pass
+
+    print("Knowledge base empty — running first-time ingest (this takes ~2 min on first launch)...")
+    from rag.ingest import ingest
+    data_dir = os.path.join(os.path.dirname(__file__), "data")
+    for pdf in ["tx_wc_basic_manual.pdf", "tx_wc_alpha_index.pdf"]:
+        pdf_path = os.path.join(data_dir, pdf)
+        if os.path.exists(pdf_path):
+            print(f"  Ingesting {pdf} ...")
+            ingest(pdf_path)
+    print("Knowledge base ready.")
+
+
 if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run("api.main:app", host="0.0.0.0", port=7860, reload=True)
+    _ensure_knowledge_base()
+    if os.getenv("SPACE_ID"):
+        # HuggingFace Spaces: Gradio SDK runs app.py directly
+        demo.launch()
+    else:
+        # Local: FastAPI + Gradio via uvicorn (API docs at /docs)
+        import uvicorn
+        uvicorn.run("api.main:app", host="0.0.0.0", port=7860, reload=True)

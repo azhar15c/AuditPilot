@@ -1,3 +1,14 @@
+---
+title: AuditPilot
+emoji: 📋
+colorFrom: blue
+colorTo: indigo
+sdk: gradio
+sdk_version: 4.44.1
+app_file: app.py
+pinned: false
+---
+
 # AuditPilot — AI-Powered Workers' Compensation Premium Audit
 
 [![Python](https://img.shields.io/badge/python-3.9+-blue?logo=python)](https://python.org)
