@@ -1,0 +1,14 @@
+gradio>=4.0
+fastapi
+uvicorn
+langgraph
+langchain
+langchain-community
+huggingface_hub
+groq
+chromadb
+pdfplumber
+python-dotenv
+httpx
+reportlab
+pytest
