@@ -2,54 +2,21 @@ import os
 import httpx
 import pandas as pd
 
-# ── Compatibility patches (must run before `import gradio`) ───────────────────
-
-# 1. huggingface_hub >=1.0 removed HfFolder; Gradio 4.x oauth.py imports it.
-import huggingface_hub as _hfhub
-if not hasattr(_hfhub, "HfFolder"):
-    class _HfFolder:
-        @staticmethod
-        def get_token(): return None
-        @staticmethod
-        def save_token(_token): pass
-        @staticmethod
-        def delete_token(): pass
-    _hfhub.HfFolder = _HfFolder
-
 import gradio as gr
 
-# 2. Jinja2 version diagnostic + cache fix.
-# In Jinja2 3.1.3+, make_globals() inserts a dict into the _load_template
-# cache_key, making it unhashable and crashing every page render.
-# Belt-and-suspenders: print the installed version AND disable the cache
-# on Gradio's Jinja2 Environment so _load_template never reaches the cache key.
-import jinja2 as _jinja2_pkg
-print(f"[AuditPilot] jinja2=={_jinja2_pkg.__version__}", flush=True)
+# Gradio 4.x had a bug where json_schema_to_python_type crashed on
+# additionalProperties=True (bool). Guard it in case it still exists.
 try:
-    import sys as _sys
-    _gr_routes = _sys.modules.get("gradio.routes")
-    if _gr_routes is None:
-        import gradio.routes as _gr_routes
-    if hasattr(_gr_routes, "templates") and hasattr(_gr_routes.templates, "env"):
-        _gr_routes.templates.env.cache = None
-        print("[AuditPilot] Jinja2 template cache disabled", flush=True)
-    else:
-        print("[AuditPilot] WARNING: gradio.routes.templates.env not found", flush=True)
-except Exception as _e:
-    print(f"[AuditPilot] WARNING: cache disable failed: {_e}", flush=True)
-
-# 3. gradio_client bug: schema['additionalProperties'] can be True (bool),
-# causing TypeError in json_schema_to_python_type() on every page load.
-import gradio_client.utils as _gcu
-_orig_schema_to_type = _gcu.json_schema_to_python_type
-
-def _safe_schema_to_type(schema, defs=None):
-    try:
-        return _orig_schema_to_type(schema, defs)
-    except TypeError:
-        return "Any"
-
-_gcu.json_schema_to_python_type = _safe_schema_to_type
+    import gradio_client.utils as _gcu
+    _orig_schema_to_type = _gcu.json_schema_to_python_type
+    def _safe_schema_to_type(schema, defs=None):
+        try:
+            return _orig_schema_to_type(schema, defs)
+        except TypeError:
+            return "Any"
+    _gcu.json_schema_to_python_type = _safe_schema_to_type
+except Exception:
+    pass
 
 API_URL = "http://localhost:8000/audit/run"
 SAMPLE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "sample_payroll_register.pdf")
