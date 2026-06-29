@@ -1,5 +1,4 @@
 import os
-import httpx
 import pandas as pd
 
 import gradio as gr
@@ -18,7 +17,6 @@ try:
 except Exception:
     pass
 
-API_URL = "http://localhost:8000/audit/run"
 SAMPLE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "sample_payroll_register.pdf")
 
 _AUDITOR_INSTRUCTIONS = """
@@ -38,36 +36,21 @@ _EMPTY_DF = pd.DataFrame(
 
 # ── Event handlers ────────────────────────────────────────────────────────────
 
-def _call_audit_api(filepath: str, filename: str, mime: str, progress) -> tuple:
+def _run_pipeline(filepath: str, progress) -> tuple:
+    """Call the LangGraph pipeline directly — no HTTP roundtrip."""
     try:
-        with open(filepath, "rb") as f:
-            progress(0.3, desc="Running intake and extraction...")
-            response = httpx.post(
-                API_URL,
-                files={"file": (filename, f, mime)},
-                timeout=120.0,
-            )
-        response.raise_for_status()
-
-    except httpx.TimeoutException:
-        gr.Warning("Request timed out. The pipeline may be processing a large document — try again.")
+        from agents.workflow import run_workflow
+        progress(0.3, desc="Running intake and extraction...")
+        state = run_workflow(filepath)
+        if state.get("error"):
+            gr.Warning(f"Pipeline error: {state['error']}")
+        progress(0.9, desc="Building results...")
+        result = _build_dataframe(state), state.get("audit_report", "")
+        progress(1.0, desc="Done.")
+        return result
+    except Exception as exc:
+        gr.Warning(f"Pipeline failed: {exc}")
         return _EMPTY_DF.copy(), ""
-
-    except httpx.HTTPStatusError as exc:
-        _handle_api_error(exc)
-        return _EMPTY_DF.copy(), ""
-
-    except httpx.RequestError:
-        gr.Warning(
-            "Cannot reach the AuditPilot API at port 8000. "
-            "Start the server with: uvicorn api.main:app --reload"
-        )
-        return _EMPTY_DF.copy(), ""
-
-    progress(0.8, desc="Building results...")
-    data = response.json()
-    progress(1.0, desc="Done.")
-    return _build_dataframe(data), data.get("audit_report", "")
 
 
 def run_audit(file, progress=gr.Progress()):
@@ -77,14 +60,12 @@ def run_audit(file, progress=gr.Progress()):
     progress(0.1, desc="Uploading document...")
     # Gradio 5 returns filepath as str; Gradio 4 returned a file-like object
     filepath = file if isinstance(file, str) else file.name
-    filename = os.path.basename(filepath)
-    mime = "application/pdf" if filename.lower().endswith(".pdf") else "text/plain"
-    return _call_audit_api(filepath, filename, mime, progress)
+    return _run_pipeline(filepath, progress)
 
 
 def run_sample_audit(progress=gr.Progress()):
     progress(0.1, desc="Loading sample document...")
-    return _call_audit_api(SAMPLE_PATH, "sample_payroll_register.pdf", "application/pdf", progress)
+    return _run_pipeline(SAMPLE_PATH, progress)
 
 
 def export_csv(df):
@@ -304,25 +285,6 @@ def generate_report_pdf(report_text: str, df):
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
-
-def _handle_api_error(exc: httpx.HTTPStatusError) -> None:
-    status = exc.response.status_code
-    try:
-        body = exc.response.json()
-        detail = body.get("detail") or body.get("error") or ""
-    except Exception:
-        detail = exc.response.text
-
-    if status == 429:
-        gr.Warning(f"HuggingFace rate limit reached. Wait a few minutes and retry.\n{detail}")
-    elif status == 503:
-        gr.Warning(f"Model is cold-starting on HuggingFace (~60 s). Please retry.\n{detail}")
-    elif status == 422:
-        gr.Warning(f"Document could not be processed: {detail}")
-    elif status == 415:
-        gr.Warning("Unsupported file type. Upload a PDF or plain text file.")
-    else:
-        gr.Warning(f"API error {status}: {detail}")
 
 
 
