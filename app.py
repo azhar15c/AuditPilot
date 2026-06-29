@@ -16,39 +16,19 @@ if not hasattr(_hfhub, "HfFolder"):
         def delete_token(): pass
     _hfhub.HfFolder = _HfFolder
 
-# 2. Newer Jinja2 + Starlette passes a mutable dict as the Jinja2 template
-# cache_key, making it unhashable and crashing every page render. Patch the
-# LRUCache class so unhashable keys are treated as permanent cache misses
-# (templates load from disk each time — slightly slower but fully functional).
-import jinja2.utils as _jinja2_utils
-
-_orig_lru_getitem = _jinja2_utils.LRUCache.__getitem__
-_orig_lru_get     = _jinja2_utils.LRUCache.get
-_orig_lru_setitem = _jinja2_utils.LRUCache.__setitem__
-
-def _safe_lru_getitem(self, key):
-    try:
-        return _orig_lru_getitem(self, key)
-    except TypeError:
-        raise KeyError(key)
-
-def _safe_lru_get(self, key, default=None):
-    try:
-        return _orig_lru_get(self, key, default)
-    except TypeError:
-        return default
-
-def _safe_lru_setitem(self, key, value):
-    try:
-        _orig_lru_setitem(self, key, value)
-    except TypeError:
-        pass  # silently skip caching unhashable keys
-
-_jinja2_utils.LRUCache.__getitem__ = _safe_lru_getitem
-_jinja2_utils.LRUCache.get        = _safe_lru_get
-_jinja2_utils.LRUCache.__setitem__ = _safe_lru_setitem
-
 import gradio as gr
+
+# 2. Newer Jinja2 (3.1.3+) + Starlette passes a mutable dict as the Jinja2
+# _load_template cache_key. Unhashable keys crash every page render. Setting
+# cache=None on Gradio's Jinja2 Environment bypasses the cache block entirely
+# so _load_template never touches the cache key at all. Templates load from
+# disk on each request — negligible overhead for a demo app.
+try:
+    import gradio.routes as _gr_routes
+    if hasattr(_gr_routes, "templates") and hasattr(_gr_routes.templates, "env"):
+        _gr_routes.templates.env.cache = None
+except Exception:
+    pass
 
 # 3. gradio_client bug: schema['additionalProperties'] can be True (bool),
 # causing TypeError in json_schema_to_python_type() on every page load.
