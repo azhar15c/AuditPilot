@@ -18,17 +18,25 @@ if not hasattr(_hfhub, "HfFolder"):
 
 import gradio as gr
 
-# 2. Newer Jinja2 (3.1.3+) + Starlette passes a mutable dict as the Jinja2
-# _load_template cache_key. Unhashable keys crash every page render. Setting
-# cache=None on Gradio's Jinja2 Environment bypasses the cache block entirely
-# so _load_template never touches the cache key at all. Templates load from
-# disk on each request — negligible overhead for a demo app.
+# 2. Jinja2 version diagnostic + cache fix.
+# In Jinja2 3.1.3+, make_globals() inserts a dict into the _load_template
+# cache_key, making it unhashable and crashing every page render.
+# Belt-and-suspenders: print the installed version AND disable the cache
+# on Gradio's Jinja2 Environment so _load_template never reaches the cache key.
+import jinja2 as _jinja2_pkg
+print(f"[AuditPilot] jinja2=={_jinja2_pkg.__version__}", flush=True)
 try:
-    import gradio.routes as _gr_routes
+    import sys as _sys
+    _gr_routes = _sys.modules.get("gradio.routes")
+    if _gr_routes is None:
+        import gradio.routes as _gr_routes
     if hasattr(_gr_routes, "templates") and hasattr(_gr_routes.templates, "env"):
         _gr_routes.templates.env.cache = None
-except Exception:
-    pass
+        print("[AuditPilot] Jinja2 template cache disabled", flush=True)
+    else:
+        print("[AuditPilot] WARNING: gradio.routes.templates.env not found", flush=True)
+except Exception as _e:
+    print(f"[AuditPilot] WARNING: cache disable failed: {_e}", flush=True)
 
 # 3. gradio_client bug: schema['additionalProperties'] can be True (bool),
 # causing TypeError in json_schema_to_python_type() on every page load.
