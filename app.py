@@ -617,14 +617,20 @@ def _ensure_knowledge_base() -> None:
     except Exception:
         pass
 
-    print("Knowledge base empty — running first-time ingest (this takes ~2 min on first launch)...")
     from rag.ingest import ingest
     data_dir = os.path.join(os.path.dirname(__file__), "data")
-    for pdf in ["tx_wc_basic_manual.pdf", "tx_wc_alpha_index.pdf"]:
-        pdf_path = os.path.join(data_dir, pdf)
-        if os.path.exists(pdf_path):
-            print(f"  Ingesting {pdf} ...")
-            ingest(pdf_path)
+    pdfs = ["tx_wc_basic_manual.pdf", "tx_wc_alpha_index.pdf"]
+    found = [p for p in pdfs if os.path.exists(os.path.join(data_dir, p))]
+
+    if not found:
+        print("RAG source PDFs not found in data/ — classification will use LLM knowledge only.")
+        print("Upload tx_wc_basic_manual.pdf and tx_wc_alpha_index.pdf via the HF Space Files tab to enable RAG.")
+        return
+
+    print(f"Knowledge base empty — ingesting {len(found)} PDF(s) (first launch only, ~2 min)...")
+    for pdf in found:
+        print(f"  Ingesting {pdf} ...")
+        ingest(os.path.join(data_dir, pdf))
     print("Knowledge base ready.")
 
 

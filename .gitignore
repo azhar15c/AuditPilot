@@ -1,6 +1,10 @@
 # secrets — never commit real keys
 .env
 
+# Large RAG source PDFs — uploaded to HF Space via huggingface_hub API (Xet storage)
+data/tx_wc_basic_manual.pdf
+data/tx_wc_alpha_index.pdf
+
 # Python
 __pycache__/
 *.py[cod]
