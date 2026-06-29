@@ -1,6 +1,33 @@
 import os
 import httpx
 import pandas as pd
+
+# huggingface_hub >=1.0 removed HfFolder; Gradio 4.x imports it in oauth.py.
+# Patch the module before importing gradio so the import doesn't fail.
+import huggingface_hub as _hfhub
+if not hasattr(_hfhub, "HfFolder"):
+    class _HfFolder:
+        @staticmethod
+        def get_token(): return None
+        @staticmethod
+        def save_token(_token): pass
+        @staticmethod
+        def delete_token(): pass
+    _hfhub.HfFolder = _HfFolder
+
+# gradio_client bug: schema['additionalProperties'] can be True (bool), causing
+# TypeError in json_schema_to_python_type() on every page load.
+import gradio_client.utils as _gcu
+_orig_schema_to_type = _gcu.json_schema_to_python_type
+
+def _safe_schema_to_type(schema, defs=None):
+    try:
+        return _orig_schema_to_type(schema, defs)
+    except TypeError:
+        return "Any"
+
+_gcu.json_schema_to_python_type = _safe_schema_to_type
+
 import gradio as gr
 
 API_URL = "http://localhost:8000/audit/run"
