@@ -637,8 +637,8 @@ def _ensure_knowledge_base() -> None:
 if __name__ == "__main__":
     _ensure_knowledge_base()
     if os.getenv("SPACE_ID"):
-        # HuggingFace Spaces: Gradio SDK runs app.py directly
-        demo.launch()
+        # HuggingFace Spaces: bind to all interfaces so the proxy can reach the app
+        demo.launch(server_name="0.0.0.0", server_port=7860)
     else:
         # Local: FastAPI + Gradio via uvicorn (API docs at /docs)
         import uvicorn
