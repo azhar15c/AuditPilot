@@ -1,6 +1,20 @@
 import os
 import pandas as pd
 
+# huggingface_hub >=0.17 removed HfFolder. Gradio 4.x oauth.py still imports
+# it, so inject a stub before `import gradio` runs. No-op when Gradio 5 is
+# installed because Gradio 5 doesn't reference HfFolder at all.
+import huggingface_hub as _hfhub
+if not hasattr(_hfhub, "HfFolder"):
+    class _HfFolder:
+        @staticmethod
+        def get_token(): return None
+        @staticmethod
+        def save_token(_t): pass
+        @staticmethod
+        def delete_token(): pass
+    _hfhub.HfFolder = _HfFolder
+
 import gradio as gr
 
 # Gradio 4.x had a bug where json_schema_to_python_type crashed on
