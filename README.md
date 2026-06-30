@@ -10,10 +10,7 @@ pinned: false
 
 # AuditPilot — AI-Powered Workers' Compensation Premium Audit
 
-[![Python](https://img.shields.io/badge/python-3.9+-blue?logo=python)](https://python.org)
-[![LangGraph](https://img.shields.io/badge/LangGraph-agentic%20workflow-green)](https://langchain-ai.github.io/langgraph/)
-[![Groq](https://img.shields.io/badge/LLM-Groq%20%7C%20Llama%203.3%2070B-orange)](https://groq.com)
-[![License: MIT](https://img.shields.io/badge/License-MIT-lightgrey)](LICENSE)
+**Demo:** [huggingface.co/spaces/azhar15c/AuditPilot](https://huggingface.co/spaces/azhar15c/AuditPilot) | **Code:** [github.com/azhar15c/AuditPilot](https://github.com/azhar15c/AuditPilot)
 
 > Automating the most manual, error-prone step in workers' compensation insurance — turning days of payroll document review into a minutes-long AI-assisted workflow.
 
