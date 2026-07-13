@@ -53,12 +53,17 @@ Rules:
 - Keep the entire report concise and scannable"""
 
 
-def report_node(state: AuditState) -> AuditState:
+def report_node(state: AuditState) -> dict:
     if state.get("error"):
-        return state
+        return {}
 
     audit_report = _client.generate(prompt=_build_prompt(state), system=_SYSTEM)
-    return {**state, "audit_report": audit_report, "current_step": "report"}
+    # Do NOT spread **state here: by the time report_node runs, ncci_suggestions/
+    # retrieval_outputs/critic_assessments/audit_trail already hold the fan-out's
+    # fully-merged contents (via their operator.add reducers on AuditState). Echoing
+    # them back in this node's return would re-trigger those reducers and duplicate
+    # every item. Return only the fields this node actually sets.
+    return {"audit_report": audit_report, "current_step": "report"}
 
 
 def _build_prompt(state: AuditState) -> str:
