@@ -13,7 +13,7 @@ _EXTRACT_SYSTEM = (
 )
 
 
-def extract_node(state: AuditState) -> AuditState:
+def extraction_agent(state: AuditState) -> AuditState:
     if state.get("error"):
         return state
 
@@ -33,7 +33,7 @@ def extract_node(state: AuditState) -> AuditState:
         **state,
         "entities": entities,
         "employee_records": employee_records,
-        "current_step": "extract",
+        "current_step": "extraction",
     }
 
 
@@ -51,6 +51,7 @@ def _llm_extract_records(raw_text: str) -> list[dict]:
         wage_m = re.search(r'WAGES:\s*(.+?)(?:\s*\||$)', line, re.IGNORECASE)
         if name_m:
             records.append({
+                "employee_id":     f"EMP-{len(records):03d}",
                 "name":            name_m.group(1).strip(),
                 "wages":           wage_m.group(1).strip() if wage_m else None,
                 "org":             None,
@@ -76,11 +77,12 @@ def _records_from_ner(grouped: dict) -> list[dict]:
     misc    = grouped.get("MISC", [])
     return [
         {
+            "employee_id":     f"EMP-{i:03d}",
             "name":            name,
             "wages":           None,
             "org":             orgs[0] if orgs else None,
             "dates":           dates,
             "job_description": misc,
         }
-        for name in persons
+        for i, name in enumerate(persons)
     ]

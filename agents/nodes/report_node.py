@@ -90,11 +90,11 @@ def _format_combined(records: list[dict], suggestions: list[dict]) -> str:
     if not records:
         return "No employee records extracted."
 
-    by_name = {s["employee"]: s for s in suggestions}
+    by_id = {s["employee_id"]: s for s in suggestions}
     lines = []
     for r in records:
         name = r.get("name", "")
-        s    = by_name.get(name, {})
+        s    = by_id.get(r.get("employee_id"), {})
         job  = ", ".join(r.get("job_description") or []) or "Not specified"
         lines.append(
             f"  Employee       : {name}\n"
