@@ -79,8 +79,10 @@ async def audit_run(file: UploadFile = File(...)) -> JSONResponse:
         "entities": state.get("entities", []),
         "employee_records": state.get("employee_records", []),
         "ncci_suggestions": state.get("ncci_suggestions", []),
+        "critic_assessments": state.get("critic_assessments", []),
         "audit_report": state.get("audit_report", ""),
         "completeness_flags": state.get("completeness_flags", {}),
+        "audit_trail": state.get("audit_trail", []),
     })
 
 

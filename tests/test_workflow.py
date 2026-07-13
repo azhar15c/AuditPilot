@@ -118,7 +118,7 @@ class TestWorkflowFullPipeline:
                 rationale="Residential roofing.", confidence="HIGH",
             )
             mock_critic_client.chat_with_tools.return_value = _tool_response(
-                "record_critic_review", agrees=True, concern="",
+                "finalize_critic_review", agrees=True, concern="",
                 recommended_action="approve", critic_confidence="HIGH",
             )
             mock_report_client.generate.return_value = (
@@ -133,3 +133,18 @@ class TestWorkflowFullPipeline:
         assert result["ncci_suggestions"][0]["ncci_code"] == "5551"
         assert result["audit_report"] != ""
         assert result["error"] is None
+
+        # Critic is fully wired into the subgraph as of Stage 3 — every employee
+        # who gets classified should also get a critic assessment, and the mocked
+        # "agrees" verdict should survive intact (regression guard for the earlier
+        # tool-name mismatch that silently exercised the parsing-failure path
+        # instead of the happy path).
+        assert len(result["critic_assessments"]) == len(result["ncci_suggestions"])
+        assert result["critic_assessments"][0]["agrees"] is True
+        assert result["critic_assessments"][0]["recommended_action"] == "approve"
+
+        # audit_trail should have one AgentStep per stage that ran: supervisor,
+        # retrieval, classification, critic (aggregate contributes none when
+        # nothing is missing).
+        agents_seen = {step["agent"] for step in result["audit_trail"]}
+        assert {"supervisor", "retrieval", "classification", "critic"} <= agents_seen

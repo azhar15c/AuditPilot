@@ -7,8 +7,9 @@ agents/state.py's existing convention; no new dependency, no runtime
 validation (malformed handoffs surface as KeyError at the point of use).
 """
 
+import operator
 from datetime import datetime, timezone
-from typing import Optional, TypedDict
+from typing import Annotated, Optional, TypedDict
 
 
 class AgentStep(TypedDict):
@@ -109,4 +110,11 @@ class EmployeeTaskState(TypedDict):
     retrieval_output: Optional[dict]  # RetrievalOutput shape; set by retrieval stage
     classification_output: Optional[dict]  # ClassificationOutput shape; set by classification stage
     critic_output: Optional[dict]  # CriticOutput shape; set by critic stage
-    audit_trail: list[dict]  # AgentStep entries appended by each stage within this one employee's run
+    # Annotated/operator.add so each subgraph node's single-item-list return
+    # (matching the "return only the delta" convention used throughout this
+    # codebase) appends rather than overwrites as retrieval -> classification
+    # -> critic run in sequence within one isolated subgraph invocation. Safe
+    # here specifically because each subgraph invocation only ever has one
+    # writer per step — this is not exposed to the cross-branch double-count
+    # risk that applies to AuditState's reducers one level up.
+    audit_trail: Annotated[list[dict], operator.add]

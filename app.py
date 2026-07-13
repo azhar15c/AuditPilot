@@ -44,7 +44,7 @@ _AUDITOR_INSTRUCTIONS = """
 """
 
 _EMPTY_DF = pd.DataFrame(
-    columns=["name", "job_title", "suggested_ncci_code", "classification", "payroll", "confidence", "rationale"]
+    columns=["name", "job_title", "suggested_ncci_code", "classification", "payroll", "confidence", "rationale", "critic_review"]
 )
 
 
@@ -305,12 +305,16 @@ def generate_report_pdf(report_text: str, df):
 def _build_dataframe(data: dict) -> pd.DataFrame:
     records     = data.get("employee_records", [])
     suggestions = data.get("ncci_suggestions", [])
-    by_name     = {s["employee"]: s for s in suggestions}
+    critiques   = data.get("critic_assessments", [])
+    by_id       = {s["employee_id"]: s for s in suggestions if s.get("employee_id")}
+    critic_by_id = {c["employee_id"]: c for c in critiques if c.get("employee_id")}
 
     rows = []
     for r in records:
+        employee_id = r.get("employee_id")
         name = r.get("name", "")
-        s    = by_name.get(name, {})
+        s    = by_id.get(employee_id, {})
+        c    = critic_by_id.get(employee_id, {})
         job  = r.get("job_description") or []
         rows.append({
             "name":                name,
@@ -320,9 +324,19 @@ def _build_dataframe(data: dict) -> pd.DataFrame:
             "payroll":             r.get("wages") or "",
             "confidence":          s.get("confidence") or "",
             "rationale":           s.get("rationale") or "",
+            "critic_review":       _critic_review_label(c),
         })
 
     return pd.DataFrame(rows) if rows else _EMPTY_DF.copy()
+
+
+def _critic_review_label(critique: dict) -> str:
+    if not critique:
+        return ""
+    if critique.get("recommended_action") == "flag_for_review":
+        concern = critique.get("concern") or "see audit trail"
+        return f"⚠ Flagged: {concern}"
+    return "✓ Approved"
 
 
 # ── Theme & CSS ───────────────────────────────────────────────────────────────
@@ -501,8 +515,8 @@ with gr.Blocks(title="AuditPilot", theme=_THEME, css=_CSS) as demo:
             """)
 
             df_out = gr.Dataframe(
-                headers=["name", "job_title", "suggested_ncci_code", "classification", "payroll", "confidence", "rationale"],
-                datatype=["str", "str", "str", "str", "str", "str", "str"],
+                headers=["name", "job_title", "suggested_ncci_code", "classification", "payroll", "confidence", "rationale", "critic_review"],
+                datatype=["str", "str", "str", "str", "str", "str", "str", "str"],
                 label="Employee Classification Table",
                 interactive=False,
                 wrap=True,

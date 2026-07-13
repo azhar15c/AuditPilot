@@ -16,15 +16,18 @@ from langgraph.graph import StateGraph, END
 from agents.schemas import EmployeeTaskState
 from agents.nodes.retrieval_agent import retrieval_agent
 from agents.nodes.classification_agent import classification_agent
+from agents.nodes.critic_agent import critic_agent
 
 
 def _build_employee_subgraph():
     graph = StateGraph(EmployeeTaskState)
     graph.add_node("retrieval_agent", retrieval_agent)
     graph.add_node("classification_agent", classification_agent)
+    graph.add_node("critic_agent", critic_agent)
     graph.set_entry_point("retrieval_agent")
     graph.add_edge("retrieval_agent", "classification_agent")
-    graph.add_edge("classification_agent", END)
+    graph.add_edge("classification_agent", "critic_agent")
+    graph.add_edge("critic_agent", END)
     return graph.compile()
 
 
@@ -33,14 +36,10 @@ _employee_subgraph = _build_employee_subgraph()
 
 def employee_pipeline_node(state: EmployeeTaskState) -> dict:
     """The Send() target from supervisor.route_to_employee_fanout. Runs the
-    per-employee subgraph to completion in full isolation, then reshapes its
-    final local state into AuditState's single-item-list contributions so the
-    parent graph's operator.add reducers concatenate one entry per employee.
-
-    critic_output is always None right now since Critic isn't wired into the
-    subgraph yet (deferred to a later integration step); the `if` guard below
-    means critic_assessments simply won't appear in the returned dict when
-    there's nothing to add, which is correct and harmless.
+    per-employee subgraph (retrieval -> classification -> critic) to
+    completion in full isolation, then reshapes its final local state into
+    AuditState's single-item-list contributions so the parent graph's
+    operator.add reducers concatenate one entry per employee.
     """
     result = _employee_subgraph.invoke(state)
 
