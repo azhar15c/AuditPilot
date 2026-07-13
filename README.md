@@ -16,6 +16,30 @@ pinned: false
 
 ---
 
+## 🚧 Architecture Redesign — In Progress (this branch)
+
+This branch (`feature/multi-agent-redesign`) is migrating AuditPilot from a fixed, linear LangGraph pipeline into a **Supervisor-orchestrated, partially-parallel multi-agent system** with a dedicated Critic/Verifier step. Full rationale, target architecture, data contracts, and rollout plan are in **[docs/MULTI_AGENT_REDESIGN_SPEC.md](docs/MULTI_AGENT_REDESIGN_SPEC.md)**.
+
+`main` — and the live HF Space demo — stay on the original pipeline (tagged [`v1-pipeline`](../../releases/tag/v1-pipeline)) for the entire duration of this build. Nothing below is deployed until this branch merges.
+
+**Why:** the old pipeline (`intake → extract → classify → report`) fused RAG retrieval, a PolicyCenter lookup, and LLM classification into one function, called serially once per employee — no independent verification step before results reached the auditor, and no parallelism despite each employee's classification being logically independent. See the spec's [Background and Motivation](docs/MULTI_AGENT_REDESIGN_SPEC.md#1-background-and-motivation) for the full case.
+
+**Progress:**
+
+| Stage | Workstream | Status |
+|---|---|---|
+| 0 | Typed agent-handoff schemas (`agents/schemas.py`) + parallel-fanout state reducers (`agents/state.py`) | ✅ Done |
+| 1 | **A** — Supervisor node (single-fetch PolicyCenter lookup, per-employee fan-out) | ✅ Done |
+| 1 | **B** — Split `classify_node` into `retrieval_agent` (iterative self-evaluating RAG loop) + `classification_agent`; renamed `extract_node` → `extraction_agent` | ✅ Done |
+| 1 | **E** — New test harness (`pytest.ini`, tool-boundary tests, fan-out concurrency tests) + fixed 10 pre-existing stale tests | ✅ Done |
+| 2 | **C** — Per-employee subgraph wiring (`agents/employee_subgraph.py`) + `aggregate_node` + `workflow.py` rewire | 🚧 In progress |
+| 2 | **D** — Critic/Verifier agent (blind review — never sees Classification's rationale) | 🚧 In progress |
+| 3 | Final integration: splice Critic into the subgraph, `api/main.py` response fields, `app.py` UI surfacing | ⬜ Pending |
+
+Run `pytest tests/ -q` on this branch at any point — the test suite is designed to show real passes for merged workstreams and clean `skipped` (not failed) for stages not yet landed, via `pytest.importorskip`.
+
+---
+
 ## What It Does
 
 Every workers' compensation policy requires an annual premium audit. An auditor manually requests payroll records, 941 forms, and certificates of insurance; extracts employee names, wages, and job roles from unstructured PDFs; maps each employee to an NCCI classification code; and produces a draft worksheet for underwriter review.
@@ -34,6 +58,8 @@ AuditPilot automates this process. Upload a payroll register PDF and the pipelin
 ---
 
 ## Architecture
+
+### v1 — Original linear pipeline (tagged `v1-pipeline`, live on `main`)
 
 ```
 ┌────────────────────────────────────────────────────────────┐
@@ -82,6 +108,44 @@ AuditPilot automates this process. Upload a payroll register PDF and the pipelin
                             └──────────────────────────────┘
 ```
 
+### v2 — Target multi-agent architecture (this branch, in progress)
+
+Full detail in [docs/MULTI_AGENT_REDESIGN_SPEC.md § 2](docs/MULTI_AGENT_REDESIGN_SPEC.md#2-target-architecture).
+
+```
+                intake_node → extraction_agent → supervisor_node
+                                                      │
+                                        dispatch_tool("get_prior_classifications")
+                                        called ONCE per run (was once per employee)
+                                                      │
+                                          route_to_employee_fanout()
+                                          Send() — one per employee, parallel
+                                                      │
+                      ┌───────────────────────────────┼───────────────────────────────┐
+                      ▼                                ▼                                ▼
+           employee_pipeline (subgraph)      employee_pipeline (subgraph)     employee_pipeline (subgraph)
+           ┌─────────────────────────┐       ┌─────────────────────────┐      ┌─────────────────────────┐
+           │ retrieval_agent          │       │ retrieval_agent          │      │ retrieval_agent          │
+           │  iterative sufficiency   │       │  loop, ChromaDB search   │      │  ...                     │
+           │  loop (max 4 rounds)     │       │  ↓                       │      │                          │
+           │ classification_agent     │       │ classification_agent     │      │ classification_agent     │
+           │  forced tool call,       │       │  ...                     │      │                          │
+           │  no direct RAG/MCP       │       │                          │      │                          │
+           │ critic_agent  (🚧)        │       │ critic_agent  (🚧)        │      │ critic_agent  (🚧)        │
+           │  blind review — never    │       │                          │      │                          │
+           │  sees the rationale      │       │                          │      │                          │
+           └─────────────────────────┘       └─────────────────────────┘      └─────────────────────────┘
+                      └───────────────────────────────┬───────────────────────────────┘
+                                                        ▼
+                                          aggregate_node (🚧)  →  report_node  →  END
+                                    validates fan-out completeness, degrades
+                                    gracefully on a single employee's failure
+```
+
+Each employee's `retrieval_agent → classification_agent → critic_agent` chain runs as an isolated per-employee **subgraph** invocation (not three top-level graph nodes) — a deliberate fix for a LangGraph mechanic confirmed during this build: a plain `Send()` fan-out only replicates the *immediately targeted* node, so downstream nodes reached via normal edges would otherwise run once globally instead of once per employee.
+
+🚧 = not yet wired in on this branch — see the progress table above.
+
 ---
 
 ## AI Components
@@ -102,6 +166,8 @@ AuditPilot automates this process. Upload a payroll register PDF and the pipelin
 
 ## Classify Node — Agent Pattern
 
+> **v1 (main / `v1-pipeline`)** — described below. **On this branch**, this single node has been split into `retrieval_agent` + `classification_agent` (+ `critic_agent`, in progress) — see [Retrieval, Classification & Critic Agents](#retrieval-classification--critic-agents-v2-in-progress) below.
+
 `classify_node` uses an agent pattern rather than a fixed pipeline call. For each employee:
 
 1. **RAG — primary query** from job title/description → top-5 NCCI manual chunks
@@ -110,6 +176,20 @@ AuditPilot automates this process. Upload a payroll register PDF and the pipelin
 4. **LLM classification** — all context assembled in one prompt; model calls `finalize_classification` (structured tool output)
 
 Python controls the data-fetching sequence. The LLM handles reasoning — it does not decide what to look up. This separation avoids multi-turn tool-calling loops which are unreliable on `llama-3.3-70b-versatile`.
+
+---
+
+## Retrieval, Classification & Critic Agents (v2, in progress)
+
+On this branch, the single `classify_node` above is split into three narrowly-scoped agents, each with least-privilege tool access (verified by tool-boundary tests in `tests/test_tool_boundaries.py`):
+
+1. **`retrieval_agent`** (`agents/nodes/retrieval_agent.py`) — replaces the old static primary+fallback RAG query with an **iterative, self-evaluating loop**: query ChromaDB, ask the LLM via one forced tool call (`evaluate_retrieval`) whether the citations actually answer this employee's classification question, and if not, reformulate the query based on *why* it fell short — up to 4 rounds. If still insufficient at the cap, returns the best citations found with `sufficiency_met: False` rather than silently passing off a weak result as confident. No access to `dispatch_tool`/PolicyCenter.
+2. **`classification_agent`** (`agents/nodes/classification_agent.py`) — the forced-tool-call `finalize_classification` step, largely unchanged from v1, except it consumes citations `retrieval_agent` already gathered rather than querying ChromaDB or PolicyCenter itself.
+3. **`critic_agent`** (🚧 in progress) — an independent verifier that checks Classification's decision against Retrieval's raw citations *before* the result reaches the human auditor. Deliberately blind-reviewed: it never sees Classification's rationale, only its final decision — reducing the risk of simply agreeing with whatever justification it's shown.
+
+A **`supervisor_node`** (`agents/nodes/supervisor.py`) runs once per audit, before these three fan out — it fetches PolicyCenter's prior classifications exactly once and shares the result across every employee, fixing a v1 inefficiency where that same lookup ran once per employee.
+
+Full data contracts (`RetrievalOutput`, `ClassificationOutput`, `CriticOutput`, etc.) are in `agents/schemas.py`.
 
 ---
 
@@ -239,35 +319,47 @@ Tests use `unittest.mock` — no real API calls or ChromaDB required.
 
 ## Project Structure
 
+**This tree reflects the current state of `feature/multi-agent-redesign`** (🆕 new since `v1-pipeline`, 🚧 landing in Stage 2/3, ❌ removed — superseded). See `git tag v1-pipeline` for the original file layout.
+
 ```
 auditpilot/
-├── app.py                    # Gradio UI + FastAPI server (single entry point)
+├── app.py                        # Gradio UI + FastAPI server (single entry point)
 ├── api/
-│   └── main.py               # FastAPI routes + Gradio mount
+│   └── main.py                   # FastAPI routes + Gradio mount
 ├── agents/
-│   ├── state.py              # AuditState TypedDict (incl. policy_number field)
-│   ├── workflow.py           # LangGraph StateGraph wiring
+│   ├── state.py                  # AuditState TypedDict — now with operator.add reducers for fan-out fields
+│   ├── schemas.py                # 🆕 typed agent-handoff contracts (RetrievalOutput, ClassificationOutput, etc.)
+│   ├── workflow.py                # LangGraph StateGraph wiring — 🚧 rewire to Supervisor+fan-out pending Stage 2
+│   ├── employee_subgraph.py      # 🚧 pending — per-employee retrieval→classification→critic subgraph
 │   └── nodes/
-│       ├── intake_node.py    # PDF/text extraction via pdfplumber
-│       ├── extract_node.py   # LLM-based employee record extraction
-│       ├── classify_node.py  # Agent: dual RAG + MCP + finalize_classification tool
-│       └── report_node.py    # Draft audit worksheet generation
+│       ├── intake_node.py        # PDF/text extraction via pdfplumber (unchanged)
+│       ├── extraction_agent.py   # 🆕 renamed from extract_node.py — now assigns stable employee_id
+│       ├── supervisor.py         # 🆕 single-fetch PolicyCenter lookup + per-employee Send() fan-out
+│       ├── retrieval_agent.py    # 🆕 iterative self-evaluating RAG loop (replaces static fallback query)
+│       ├── classification_agent.py  # 🆕 forced-tool-call classification, no direct RAG/MCP access
+│       ├── critic_agent.py       # 🚧 pending — blind-review verifier
+│       ├── aggregate_node.py     # 🚧 pending — post-fan-out validation, graceful partial-failure handling
+│       └── report_node.py        # Draft audit worksheet generation — join key fixed to employee_id
 ├── models/
-│   └── hf_client.py          # HFClient: BERT NER, BGE embeddings, Groq generation + tool calling
+│   └── hf_client.py              # HFClient: BERT NER, BGE embeddings, Groq generation + tool calling
 ├── mcp_servers/
-│   └── policycenter.py       # PolicyCenter MCP tools (mock + real REST stubs)
+│   └── policycenter.py           # PolicyCenter MCP tools (mock + real REST stubs)
 ├── rag/
-│   ├── ingest.py             # Chunk + embed PDFs into ChromaDB
-│   └── retriever.py          # NCCIRetriever.query() — top-k NCCI context
+│   ├── ingest.py                 # Chunk + embed PDFs into ChromaDB
+│   └── retriever.py              # NCCIRetriever.query() — top-k NCCI context
 ├── data/
 │   ├── sample_payroll_register.pdf   # Synthetic demo payroll register
 │   ├── tx_wc_basic_manual.pdf        # Texas WC Basic Manual (RAG source)
 │   └── tx_wc_alpha_index.pdf         # Texas WC Alphabetical Index (RAG source)
-├── tests/
-├── .env.example              # Key template — copy to .env and fill in
-├── .gitignore                # Excludes .env, venv/, chroma_db/
+├── docs/
+│   └── MULTI_AGENT_REDESIGN_SPEC.md  # 🆕 full redesign spec — background, target architecture, rollout plan
+├── tests/                        # 🆕 pytest.ini + tool-boundary/fan-out/retrieval-convergence test suites added
+├── .env.example                  # Key template — copy to .env and fill in
+├── .gitignore                    # Excludes .env, venv/, chroma_db/
 └── requirements.txt
 ```
+
+`extract_node.py` and `classify_node.py` (v1) are ❌ removed on this branch — their logic now lives in `extraction_agent.py` and `retrieval_agent.py` + `classification_agent.py` respectively.
 
 ---
 
