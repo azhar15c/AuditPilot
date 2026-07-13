@@ -1,21 +1,16 @@
 import json
 import re
-from agents.state import AuditState
+import time
+from agents.schemas import EmployeeTaskState, make_agent_step
 from models.hf_client import HFClient
-from rag.retriever import NCCIRetriever
-from mcp_servers.policycenter import dispatch_tool
 
-_client    = HFClient()
-_retriever = NCCIRetriever()
-
-_DEFAULT_POLICY_NUMBER    = "WC-DEMO-001"
-_POOR_MATCH_THRESHOLD     = 1.2   # cosine distance above this triggers a second RAG query
+_client = HFClient()
 
 _AGENT_SYSTEM = """You are a workers' compensation premium audit specialist.
 
 You have been given:
 - An employee's name, job title, and reported wages
-- Relevant NCCI manual excerpts retrieved via semantic search
+- Relevant NCCI manual excerpts already retrieved via semantic search
 - NCCI class codes used for this employer in the prior policy period (for consistency)
 
 Your task: call finalize_classification with the best-fit NCCI class code.
@@ -59,60 +54,63 @@ _FINALIZE_TOOL = {
 }
 
 
-def classify_node(state: AuditState) -> AuditState:
-    if state.get("error"):
-        return state
+def classification_agent(state: EmployeeTaskState) -> dict:
+    """Node in the per-employee subgraph. Forced-tool-call classification using
+    ONLY the citations Retrieval already gathered — no direct RAG/PolicyCenter access."""
+    record      = state["employee_record"]
+    employee_id = record["employee_id"]
+    employee    = record.get("name", "")
 
-    records = state.get("employee_records", [])
-    if not records:
-        return {**state, "error": "No employee records to classify.", "current_step": "classify"}
+    retrieval_output = state.get("retrieval_output") or {}
+    citations        = retrieval_output.get("policy_citations", [])
+    rag_context      = _format_citations(citations)
+    prior_data       = state.get("prior_classifications", {})
 
-    policy_number = state.get("policy_number") or _DEFAULT_POLICY_NUMBER
-    suggestions   = [_classify_employee(record, policy_number) for record in records]
-    return {**state, "ncci_suggestions": suggestions, "current_step": "classify"}
+    start = time.monotonic()
 
-
-# ── Data fetching (Python-controlled) ─────────────────────────────────────────
-
-def _classify_employee(record: dict, policy_number: str) -> dict:
-    """Fetch all context deterministically, then let the LLM reason and classify."""
-
-    # RAG: primary query from job title
-    primary_query = _build_query(record)
-    rag_results   = _retriever.query(primary_query, top_k=5)
-
-    # RAG: if first query is a poor match, try a narrower alt query and combine
-    if rag_results and rag_results[0]["distance"] > _POOR_MATCH_THRESHOLD:
-        alt_query = _build_alt_query(record)
-        if alt_query != primary_query:
-            alt_results = _retriever.query(alt_query, top_k=3)
-            rag_results = rag_results[:3] + alt_results
-
-    rag_context = _retriever.format_context(rag_results)
-
-    # PolicyCenter MCP: prior-period classifications (mock until GW tenant is set)
-    prior_data = dispatch_tool("get_prior_classifications", {"policy_number": policy_number})
-
-    # LLM: classify with all context assembled, forced to call finalize_classification
     messages = [
         {"role": "system", "content": _AGENT_SYSTEM},
         {"role": "user",   "content": _build_prompt(record, rag_context, prior_data)},
     ]
     response = _client.chat_with_tools(messages, [_FINALIZE_TOOL], tool_choice="required")
-    return _extract_result(response, record["name"])
+    result   = _extract_result(response)
+
+    duration_ms = (time.monotonic() - start) * 1000
+
+    audit_step = make_agent_step(
+        agent="classification",
+        employee_id=employee_id,
+        input_summary=f"employee={employee!r}, citations_used={len(citations)}",
+        output_summary=f"ncci_code={result.get('ncci_code')}, confidence={result.get('confidence')}",
+        duration_ms=duration_ms,
+    )
+
+    return {
+        "classification_output": {
+            "employee_id":    employee_id,
+            "employee":       employee,
+            "ncci_code":      result.get("ncci_code"),
+            "classification": result.get("classification", ""),
+            "rationale":      result.get("rationale", ""),
+            "confidence":     result.get("confidence", "LOW"),
+        },
+        "audit_trail": [audit_step],
+    }
 
 
-def _build_query(record: dict) -> str:
-    parts = list(record.get("job_description") or [])
-    if record.get("org"):
-        parts.append(record["org"])
-    return " ".join(parts) if parts else record.get("name", "employee")
-
-
-def _build_alt_query(record: dict) -> str:
-    """Job description words only, without the employer name."""
-    parts = list(record.get("job_description") or [])
-    return " ".join(parts) if parts else _build_query(record)
+def _format_citations(citations: list[dict]) -> str:
+    """Format retrieval_output's policy_citations into prompt-ready text.
+    Mirrors NCCIRetriever.format_context without importing that class
+    (Classification must not reach ChromaDB directly)."""
+    if not citations:
+        return "No relevant NCCI reference material found."
+    sections = []
+    for i, r in enumerate(citations, start=1):
+        source = (r.get("metadata") or {}).get("source", "unknown")
+        sections.append(
+            f"[Ref {i} | {source} | distance: {r.get('distance')}]\n{r.get('chunk_text', '')}"
+        )
+    return "\n\n---\n\n".join(sections)
 
 
 def _build_prompt(record: dict, rag_context: str, prior_data: dict) -> str:
@@ -127,7 +125,7 @@ def _build_prompt(record: dict, rag_context: str, prior_data: dict) -> str:
         prior_section = f"\nPrior policy period classifications for this employer:\n{lines}\n"
 
     return (
-        f"Employee:       {record['name']}\n"
+        f"Employee:       {record.get('name', '')}\n"
         f"Job title/role: {job_desc}\n"
         f"Employer:       {record.get('org') or 'Unknown'}\n"
         f"Reported wages: {record.get('wages') or 'Not specified'}\n"
@@ -139,7 +137,7 @@ def _build_prompt(record: dict, rag_context: str, prior_data: dict) -> str:
 
 # ── Result extraction ─────────────────────────────────────────────────────────
 
-def _extract_result(response, employee: str) -> dict:
+def _extract_result(response) -> dict:
     msg = response.choices[0].message
 
     if msg.tool_calls:
@@ -147,7 +145,6 @@ def _extract_result(response, employee: str) -> dict:
             if tc.function.name == "finalize_classification":
                 args = json.loads(tc.function.arguments)
                 return {
-                    "employee":       employee,
                     "ncci_code":      args.get("ncci_code"),
                     "classification": args.get("classification", ""),
                     "rationale":      args.get("rationale", ""),
@@ -161,7 +158,6 @@ def _extract_result(response, employee: str) -> dict:
     rationale      = re.search(r'RATIONALE:\s*(.+)',      content, re.IGNORECASE)
     confidence     = re.search(r'CONFIDENCE:\s*(HIGH|MEDIUM|LOW)', content, re.IGNORECASE)
     return {
-        "employee":       employee,
         "ncci_code":      code.group(1) if code else None,
         "classification": classification.group(1).strip() if classification else "",
         "rationale":      rationale.group(1).strip() if rationale else content.strip()[:200],
