@@ -32,11 +32,11 @@ This branch (`feature/multi-agent-redesign`) is migrating AuditPilot from a fixe
 | 1 | **A** — Supervisor node (single-fetch PolicyCenter lookup, per-employee fan-out) | ✅ Done |
 | 1 | **B** — Split `classify_node` into `retrieval_agent` (iterative self-evaluating RAG loop) + `classification_agent`; renamed `extract_node` → `extraction_agent` | ✅ Done |
 | 1 | **E** — New test harness (`pytest.ini`, tool-boundary tests, fan-out concurrency tests) + fixed 10 pre-existing stale tests | ✅ Done |
-| 2 | **C** — Per-employee subgraph wiring (`agents/employee_subgraph.py`) + `aggregate_node` + `workflow.py` rewire | 🚧 In progress |
-| 2 | **D** — Critic/Verifier agent (blind review — never sees Classification's rationale) | 🚧 In progress |
+| 2 | **C** — Per-employee subgraph wiring (`agents/employee_subgraph.py`) + `aggregate_node` + `workflow.py` rewire (`intake → extraction → supervisor → Send fan-out → employee_pipeline → aggregate → report`) | ✅ Done |
+| 2 | **D** — Critic/Verifier agent (blind review — structurally never reads Classification's `rationale`) | ✅ Done |
 | 3 | Final integration: splice Critic into the subgraph, `api/main.py` response fields, `app.py` UI surfacing | ⬜ Pending |
 
-Run `pytest tests/ -q` on this branch at any point — the test suite is designed to show real passes for merged workstreams and clean `skipped` (not failed) for stages not yet landed, via `pytest.importorskip`.
+`pytest tests/ -q` currently: **28 passed, 0 skipped, 0 failed.** (Critic is fully built and tested standalone but not yet spliced into the live graph — that's Stage 3 — so a real run today produces empty `critic_assessments`; everything else, including genuine per-employee concurrency, already works end-to-end.)
 
 ---
 
@@ -137,14 +137,14 @@ Full detail in [docs/MULTI_AGENT_REDESIGN_SPEC.md § 2](docs/MULTI_AGENT_REDESIG
            └─────────────────────────┘       └─────────────────────────┘      └─────────────────────────┘
                       └───────────────────────────────┬───────────────────────────────┘
                                                         ▼
-                                          aggregate_node (🚧)  →  report_node  →  END
+                                          aggregate_node  →  report_node  →  END
                                     validates fan-out completeness, degrades
                                     gracefully on a single employee's failure
 ```
 
-Each employee's `retrieval_agent → classification_agent → critic_agent` chain runs as an isolated per-employee **subgraph** invocation (not three top-level graph nodes) — a deliberate fix for a LangGraph mechanic confirmed during this build: a plain `Send()` fan-out only replicates the *immediately targeted* node, so downstream nodes reached via normal edges would otherwise run once globally instead of once per employee.
+Each employee's `retrieval_agent → classification_agent` chain (🆕 `critic_agent` joining in Stage 3) runs as an isolated per-employee **subgraph** invocation (not three top-level graph nodes) — a deliberate fix for a LangGraph mechanic confirmed during this build: a plain `Send()` fan-out only replicates the *immediately targeted* node, so downstream nodes reached via normal edges would otherwise run once globally instead of once per employee. Verified end-to-end: a 2-employee mocked run produces exactly 2 `ncci_suggestions` and 2 `retrieval_outputs` (not 4 — a reducer-doubling bug this build also caught and fixed along the way, see `agents/nodes/report_node.py`'s commit history) and calls `dispatch_tool("get_prior_classifications")` exactly once.
 
-🚧 = not yet wired in on this branch — see the progress table above.
+🚧 = not yet wired in on this branch (only `critic_agent`'s splice into the subgraph remains) — see the progress table above.
 
 ---
 
@@ -185,7 +185,7 @@ On this branch, the single `classify_node` above is split into three narrowly-sc
 
 1. **`retrieval_agent`** (`agents/nodes/retrieval_agent.py`) — replaces the old static primary+fallback RAG query with an **iterative, self-evaluating loop**: query ChromaDB, ask the LLM via one forced tool call (`evaluate_retrieval`) whether the citations actually answer this employee's classification question, and if not, reformulate the query based on *why* it fell short — up to 4 rounds. If still insufficient at the cap, returns the best citations found with `sufficiency_met: False` rather than silently passing off a weak result as confident. No access to `dispatch_tool`/PolicyCenter.
 2. **`classification_agent`** (`agents/nodes/classification_agent.py`) — the forced-tool-call `finalize_classification` step, largely unchanged from v1, except it consumes citations `retrieval_agent` already gathered rather than querying ChromaDB or PolicyCenter itself.
-3. **`critic_agent`** (🚧 in progress) — an independent verifier that checks Classification's decision against Retrieval's raw citations *before* the result reaches the human auditor. Deliberately blind-reviewed: it never sees Classification's rationale, only its final decision — reducing the risk of simply agreeing with whatever justification it's shown.
+3. **`critic_agent`** (`agents/nodes/critic_agent.py` — built and unit-tested, 🚧 not yet spliced into the live subgraph) — an independent verifier that checks Classification's decision against Retrieval's raw citations *before* the result reaches the human auditor. Deliberately blind-reviewed: `state["classification_output"]["rationale"]` is never read anywhere in the file, only the final decision — reducing the risk of simply agreeing with whatever justification it's shown. If the LLM fails to return a structured verdict, the fallback defaults to `flag_for_review`, never a silent approval.
 
 A **`supervisor_node`** (`agents/nodes/supervisor.py`) runs once per audit, before these three fan out — it fetches PolicyCenter's prior classifications exactly once and shares the result across every employee, fixing a v1 inefficiency where that same lookup ran once per employee.
 
@@ -329,17 +329,17 @@ auditpilot/
 ├── agents/
 │   ├── state.py                  # AuditState TypedDict — now with operator.add reducers for fan-out fields
 │   ├── schemas.py                # 🆕 typed agent-handoff contracts (RetrievalOutput, ClassificationOutput, etc.)
-│   ├── workflow.py                # LangGraph StateGraph wiring — 🚧 rewire to Supervisor+fan-out pending Stage 2
-│   ├── employee_subgraph.py      # 🚧 pending — per-employee retrieval→classification→critic subgraph
+│   ├── workflow.py                # 🆕 rewired: intake→extraction→supervisor→Send fan-out→aggregate→report
+│   ├── employee_subgraph.py      # 🆕 per-employee retrieval→classification subgraph (🚧 critic joins Stage 3)
 │   └── nodes/
 │       ├── intake_node.py        # PDF/text extraction via pdfplumber (unchanged)
 │       ├── extraction_agent.py   # 🆕 renamed from extract_node.py — now assigns stable employee_id
 │       ├── supervisor.py         # 🆕 single-fetch PolicyCenter lookup + per-employee Send() fan-out
 │       ├── retrieval_agent.py    # 🆕 iterative self-evaluating RAG loop (replaces static fallback query)
 │       ├── classification_agent.py  # 🆕 forced-tool-call classification, no direct RAG/MCP access
-│       ├── critic_agent.py       # 🚧 pending — blind-review verifier
-│       ├── aggregate_node.py     # 🚧 pending — post-fan-out validation, graceful partial-failure handling
-│       └── report_node.py        # Draft audit worksheet generation — join key fixed to employee_id
+│       ├── critic_agent.py       # 🆕 blind-review verifier — built + tested, 🚧 not yet spliced into subgraph
+│       ├── aggregate_node.py     # 🆕 post-fan-out validation, graceful partial-failure handling
+│       └── report_node.py        # Draft audit worksheet generation — join key fixed to employee_id, no longer double-counts reducer fields
 ├── models/
 │   └── hf_client.py              # HFClient: BERT NER, BGE embeddings, Groq generation + tool calling
 ├── mcp_servers/
