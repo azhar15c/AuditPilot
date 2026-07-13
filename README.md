@@ -18,7 +18,7 @@ pinned: false
 
 ## ✅ Architecture Redesign — Complete on this branch, pending merge to `main`
 
-This branch (`feature/multi-agent-redesign`) migrates AuditPilot from a fixed, linear LangGraph pipeline into a **Supervisor-orchestrated, partially-parallel multi-agent system** with a dedicated Critic/Verifier step. Full rationale, target architecture, data contracts, and rollout plan are in **[docs/MULTI_AGENT_REDESIGN_SPEC.md](docs/MULTI_AGENT_REDESIGN_SPEC.md)**.
+This branch (`feature/multi-agent-redesign`) migrates AuditPilot from a fixed, linear LangGraph pipeline into a **Supervisor-orchestrated, partially-parallel multi-agent system** with a dedicated Critic/Verifier step. Full rationale, target architecture, data contracts, and rollout plan are in **[docs/MULTI_AGENT_REDESIGN_SPEC.md](docs/MULTI_AGENT_REDESIGN_SPEC.md)**; the concrete staged build plan that was executed against that spec (file-level scope per workstream, merge order, verification commands, and the LangGraph `Send()`-per-branch-identity correction found mid-build) is in **[docs/IMPLEMENTATION_PLAN.md](docs/IMPLEMENTATION_PLAN.md)**.
 
 `main` — and the live HF Space demo — stay on the original pipeline (tagged [`v1-pipeline`](../../releases/tag/v1-pipeline)) until this branch is explicitly merged, which is a separate, later, human decision — not something this build performs on its own.
 
@@ -352,7 +352,8 @@ auditpilot/
 │   ├── tx_wc_basic_manual.pdf        # Texas WC Basic Manual (RAG source)
 │   └── tx_wc_alpha_index.pdf         # Texas WC Alphabetical Index (RAG source)
 ├── docs/
-│   └── MULTI_AGENT_REDESIGN_SPEC.md  # 🆕 full redesign spec — background, target architecture, rollout plan
+│   ├── MULTI_AGENT_REDESIGN_SPEC.md  # 🆕 full redesign spec — background, target architecture, rollout plan
+│   └── IMPLEMENTATION_PLAN.md        # 🆕 the staged build plan executed against that spec
 ├── tests/                        # 🆕 pytest.ini + tool-boundary/fan-out/retrieval-convergence test suites added
 ├── .env.example                  # Key template — copy to .env and fill in
 ├── .gitignore                    # Excludes .env, venv/, chroma_db/
