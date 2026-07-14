@@ -8,18 +8,22 @@ _client    = HFClient()
 _retriever = NCCIRetriever()
 
 _MAX_ITERATIONS = 4
+_MAX_CITATIONS_RETURNED = 8  # cap after accumulation, before handoff to classification_agent
 
 _SUFFICIENCY_SYSTEM = """You are a workers' compensation premium audit research assistant.
 
-You are judging whether a batch of NCCI manual excerpts, retrieved via semantic
-search for one specific employee, contains enough information to confidently
-assign that employee an NCCI class code.
+You are iteratively searching NCCI manual excerpts for one specific employee.
+Each round shows you a compact summary of prior rounds' findings (not the raw
+excerpts already reviewed — those have already been judged) plus any NEW
+excerpts just found. Judge sufficiency against everything collected so far,
+not just this round's new excerpts.
 
-Call evaluate_retrieval with your judgment. Be strict: if the excerpts are
-generic, off-topic, or missing a cross-referenced clause the job clearly needs
-(e.g. a "drivers" or "clerical" carve-out), mark not sufficient and propose a
-sharper, more specific search query targeting exactly what is missing.
-Always call evaluate_retrieval — do not respond in plain text."""
+Call evaluate_retrieval with your judgment. Be strict: if the excerpts
+collected so far are generic, off-topic, or missing a cross-referenced clause
+the job clearly needs (e.g. a "drivers" or "clerical" carve-out), mark not
+sufficient and propose a sharper, more specific search query targeting
+exactly what is missing. Always call evaluate_retrieval — do not respond in
+plain text."""
 
 _SUFFICIENCY_TOOL = {
     "type": "function",
@@ -41,9 +45,21 @@ _SUFFICIENCY_TOOL = {
 
 def retrieval_agent(state: EmployeeTaskState) -> dict:
     """Node in the per-employee subgraph. Iteratively searches ChromaDB, judging
-    after each attempt whether the results are sufficient to answer this employee's
-    classification question; if not, reformulates the query based on *why* it fell
-    short, up to _MAX_ITERATIONS attempts."""
+    after each attempt whether the results collected *so far* are sufficient to
+    answer this employee's classification question; if not, reformulates the
+    query based on *why* it fell short, up to _MAX_ITERATIONS attempts.
+
+    Context engineering, not just "loop and pass more": results are
+    accumulated and deduped across rounds (a chunk found in round 1 is not
+    lost just because round 2 searched something else), but each round's
+    prompt only shows *new* chunks plus a compact scratchpad distilled from
+    prior rounds' own reasoning — not a replay of every raw chunk ever seen.
+    That keeps prompt size roughly flat across iterations instead of growing
+    with them. The final accumulated set is capped to the top
+    _MAX_CITATIONS_RETURNED by relevance before handoff to
+    classification_agent, so a long search doesn't balloon the next agent's
+    prompt either.
+    """
     record      = state["employee_record"]
     employee_id = record["employee_id"]
     prior_data  = state.get("prior_classifications", {})
@@ -52,19 +68,26 @@ def retrieval_agent(state: EmployeeTaskState) -> dict:
 
     query          = _build_query(record)
     queries_used: list[str] = []
-    results: list[dict]     = []
+    collected: dict[str, dict] = {}  # chunk id -> chunk, accumulated + deduped across rounds
+    scratchpad: list[str] = []       # compact per-round notes, carried forward instead of raw chunk replay
     sufficiency_met = False
     reasoning       = ""
     iterations_run  = 0
 
-    for _ in range(_MAX_ITERATIONS):
-        iterations_run += 1
+    for round_num in range(1, _MAX_ITERATIONS + 1):
+        iterations_run = round_num
         queries_used.append(query)
 
-        results = _retriever.query(query, top_k=5)
-        context = _retriever.format_context(results)
+        round_results = _retriever.query(query, top_k=5)
+        new_chunks = [c for c in round_results if c["id"] not in collected]
+        collected.update({c["id"]: c for c in round_results})
 
-        sufficient, reasoning, refined_query = _evaluate_sufficiency(record, query, context, prior_data)
+        new_context = _format_new_context(round_results, new_chunks)
+
+        sufficient, reasoning, refined_query = _evaluate_sufficiency(
+            record, query, new_context, scratchpad, len(collected), prior_data,
+        )
+        scratchpad.append(f"Round {round_num} (query={query!r}): {reasoning}")
 
         if sufficient:
             sufficiency_met = True
@@ -74,13 +97,15 @@ def retrieval_agent(state: EmployeeTaskState) -> dict:
 
     duration_ms = (time.monotonic() - start) * 1000
 
+    final_citations = sorted(collected.values(), key=lambda c: c["distance"])[:_MAX_CITATIONS_RETURNED]
+
     audit_step = make_agent_step(
         agent="retrieval",
         employee_id=employee_id,
         input_summary=f"job={record.get('job_description')!r}, initial_query={queries_used[0]!r}",
         output_summary=(
             f"iterations={iterations_run}, sufficient={sufficiency_met}, "
-            f"citations={len(results)}, last_query={queries_used[-1]!r}"
+            f"collected={len(collected)}, returned={len(final_citations)}, last_query={queries_used[-1]!r}"
         ),
         duration_ms=duration_ms,
     )
@@ -88,7 +113,7 @@ def retrieval_agent(state: EmployeeTaskState) -> dict:
     return {
         "retrieval_output": {
             "employee_id": employee_id,
-            "policy_citations": results,
+            "policy_citations": final_citations,
             "policycenter_fields": prior_data,
             "search_queries_used": queries_used,
             "iterations_run": iterations_run,
@@ -106,7 +131,18 @@ def _build_query(record: dict) -> str:
     return " ".join(parts) if parts else record.get("name", "employee")
 
 
-def _build_eval_prompt(record: dict, query: str, context: str, prior_data: dict) -> str:
+def _format_new_context(round_results: list[dict], new_chunks: list[dict]) -> str:
+    if not round_results:
+        return "No relevant NCCI reference material found for this query."
+    if not new_chunks:
+        return "(query returned only already-seen excerpts — no new information this round)"
+    return _retriever.format_context(new_chunks)
+
+
+def _build_eval_prompt(
+    record: dict, query: str, new_context: str, scratchpad: list[str],
+    collected_count: int, prior_data: dict,
+) -> str:
     job_desc = ", ".join(record.get("job_description") or []) or "Not specified"
 
     prior_section = ""
@@ -117,21 +153,33 @@ def _build_eval_prompt(record: dict, query: str, context: str, prior_data: dict)
         )
         prior_section = f"\nPrior policy period classifications for this employer (context only):\n{lines}\n"
 
+    scratchpad_section = ""
+    if scratchpad:
+        notes = "\n".join(f"  - {note}" for note in scratchpad)
+        scratchpad_section = (
+            f"\nProgress so far ({collected_count} unique excerpt(s) collected across all rounds):\n{notes}\n"
+        )
+
     return (
         f"Employee:       {record.get('name', 'Unknown')}\n"
         f"Job title/role: {job_desc}\n"
         f"Employer:       {record.get('org') or 'Unknown'}\n"
-        f"{prior_section}\n"
-        f"Search query used: {query!r}\n\n"
-        f"Retrieved NCCI Manual Excerpts:\n{context}\n\n"
-        "Call evaluate_retrieval with your judgment on whether these excerpts are sufficient."
+        f"{prior_section}"
+        f"{scratchpad_section}\n"
+        f"Search query used this round: {query!r}\n\n"
+        f"New excerpts found this round:\n{new_context}\n\n"
+        "Considering everything collected so far — not just this round — call "
+        "evaluate_retrieval with your judgment on whether it's now sufficient."
     )
 
 
-def _evaluate_sufficiency(record: dict, query: str, context: str, prior_data: dict) -> tuple[bool, str, str]:
+def _evaluate_sufficiency(
+    record: dict, query: str, new_context: str, scratchpad: list[str],
+    collected_count: int, prior_data: dict,
+) -> tuple[bool, str, str]:
     messages = [
         {"role": "system", "content": _SUFFICIENCY_SYSTEM},
-        {"role": "user",   "content": _build_eval_prompt(record, query, context, prior_data)},
+        {"role": "user",   "content": _build_eval_prompt(record, query, new_context, scratchpad, collected_count, prior_data)},
     ]
     response = _client.chat_with_tools(messages, [_SUFFICIENCY_TOOL], tool_choice="required")
     return _extract_sufficiency(response)
