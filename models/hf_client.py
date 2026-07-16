@@ -1,6 +1,8 @@
 import os
+import re
+import time
 from dotenv import load_dotenv
-from groq import Groq
+from groq import Groq, RateLimitError
 from huggingface_hub import InferenceClient
 
 load_dotenv()
@@ -8,6 +10,48 @@ load_dotenv()
 NER_MODEL      = "dslim/bert-base-NER"
 EMBED_MODEL    = "BAAI/bge-large-en-v1.5"
 GENERATE_MODEL = "llama-3.3-70b-versatile"   # Groq model ID
+
+_MAX_RATE_LIMIT_RETRIES = 3
+_DEFAULT_BACKOFF_SECONDS = 2.0
+_RETRY_HINT_RE = re.compile(r"try again in ([\d.]+)s", re.IGNORECASE)
+
+
+def _retry_after_seconds(exc: RateLimitError) -> float:
+    """How long to wait before retrying, in order of preference: the response's
+    Retry-After header, Groq's "try again in Xs" hint in the error message,
+    then a fixed fallback."""
+    header = exc.response.headers.get("retry-after") if exc.response is not None else None
+    if header:
+        try:
+            return float(header)
+        except ValueError:
+            pass
+    match = _RETRY_HINT_RE.search(str(exc))
+    if match:
+        return float(match.group(1))
+    return _DEFAULT_BACKOFF_SECONDS
+
+
+def _call_with_retry(fn, *args, **kwargs):
+    """Call a Groq API function, retrying on 429 rate-limit responses.
+
+    Concurrent per-employee LLM calls (the whole point of the multi-agent
+    fan-out) can burst past Groq's per-minute token limit even when total
+    usage is unremarkable, because the old sequential pipeline spread the
+    same calls out over the run's full wall-clock time and this one doesn't.
+    Retrying with the wait time Groq itself reports keeps the concurrency
+    benefit instead of serializing everything or capping fan-out width to
+    dodge a free-tier-specific ceiling.
+    """
+    for attempt in range(_MAX_RATE_LIMIT_RETRIES + 1):
+        try:
+            return fn(*args, **kwargs)
+        except RateLimitError as exc:
+            if attempt == _MAX_RATE_LIMIT_RETRIES:
+                raise
+            wait = _retry_after_seconds(exc) + 0.5  # small buffer past Groq's own estimate
+            print(f"Groq rate limit hit (attempt {attempt + 1}/{_MAX_RATE_LIMIT_RETRIES}); retrying in {wait:.1f}s")
+            time.sleep(wait)
 
 
 class HFClient:
@@ -41,8 +85,10 @@ class HFClient:
         return [list(map(float, vec)) for vec in raw]
 
     def generate(self, prompt: str, system: str) -> str:
-        """Generate a text response using Llama 3.3 70B via Groq."""
-        response = self._gen.chat.completions.create(
+        """Generate a text response using Llama 3.3 70B via Groq.
+        Retries on 429 rate-limit responses — see _call_with_retry."""
+        response = _call_with_retry(
+            self._gen.chat.completions.create,
             model=GENERATE_MODEL,
             messages=[
                 {"role": "system", "content": system},
@@ -55,8 +101,10 @@ class HFClient:
     def chat_with_tools(self, messages: list[dict], tools: list[dict], tool_choice: str = "auto"):
         """Run a Groq chat completion with tool definitions.
         Returns the raw response so callers can inspect finish_reason and tool_calls.
-        Pass tool_choice='required' to force the model to call a tool (structured output)."""
-        return self._gen.chat.completions.create(
+        Pass tool_choice='required' to force the model to call a tool (structured output).
+        Retries on 429 rate-limit responses — see _call_with_retry."""
+        return _call_with_retry(
+            self._gen.chat.completions.create,
             model=GENERATE_MODEL,
             messages=messages,
             tools=tools,
