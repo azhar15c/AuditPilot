@@ -36,7 +36,11 @@ This branch (`feature/multi-agent-redesign`) migrates AuditPilot from a fixed, l
 | 2 | **D** — Critic/Verifier agent (blind review — structurally never reads Classification's `rationale`) | ✅ Done |
 | 3 | Final integration: Critic spliced into the subgraph, `api/main.py` response fields, `app.py` Critic status column | ✅ Done |
 
-`pytest tests/ -q` currently: **36 passed, 0 skipped, 0 failed.** Verified end-to-end through the real FastAPI `/audit/run` HTTP layer (not just the pipeline function directly) with a real file upload: 2 employees in → 2 classifications → 2 critic assessments (one `✓ Approved`, one `⚠ Flagged: ...` in a deliberately-engineered disagreement case) → 7 audit-trail entries → a rendered report, all with zero duplication. A live run against the real HF/Groq APIs was also attempted and correctly hit HF's free-tier rate limit — confirming the pre-existing error-handling path still works correctly under the new graph, though it means this particular check didn't get a real-API pass in this session. Post-completion, the retrieval loop was further reworked to apply context engineering (accumulate/dedupe/compact/cap instead of overwrite-and-replay) — see [Retrieval, Classification & Critic Agents](#retrieval-classification--critic-agents-v2) below.
+`pytest tests/ -q` currently: **43 passed, 0 skipped, 0 failed.** Verified end-to-end through the real FastAPI `/audit/run` HTTP layer (not just the pipeline function directly) with a real file upload: 2 employees in → 2 classifications → 2 critic assessments (one `✓ Approved`, one `⚠ Flagged: ...` in a deliberately-engineered disagreement case) → 7 audit-trail entries → a rendered report, all with zero duplication.
+
+Post-completion, two things were found running the sample audit live against the real APIs, both since fixed:
+- The retrieval loop was reworked to apply context engineering (accumulate/dedupe/compact/cap instead of overwrite-and-replay) — see [Retrieval, Classification & Critic Agents](#retrieval-classification--critic-agents-v2) below.
+- A real 3-employee run hit Groq's free-tier per-minute token limit — a direct consequence of the fan-out's own concurrency win (see [Groq rate limits](#groq-rate-limits-and-retrybackoff) below) — now handled with automatic retry/backoff rather than failing the audit.
 
 ---
 
@@ -161,6 +165,14 @@ This is the live graph shape on `main` after this branch merges — every box ab
 **Why BERT + LLM:** BERT handles fast entity extraction without burning Groq quota. The 70B model is reserved for reasoning tasks: structured extraction from tabular payroll formats, classification with rationale, and report generation.
 
 **Why the classify agent uses tool calling for output:** Structured output via `finalize_classification` with `tool_choice="required"` gives typed fields (code, title, rationale, confidence) without regex parsing. The LLM cannot hallucinate format — the tool schema enforces it.
+
+---
+
+## Groq Rate Limits and Retry/Backoff
+
+Running the sample audit live against the real APIs surfaced a direct consequence of the multi-agent redesign's own concurrency win: the v1 pipeline classified employees one at a time in a Python loop, so its Groq calls were naturally spread across the whole run's wall-clock time. The v2 pipeline fans every employee's `retrieval_agent → classification_agent → critic_agent` chain out **concurrently** via `Send()` — that's the point, it's faster — but it also means every employee's LLM calls land in the same narrow time window instead of being spread out. On a 3-employee sample document, that was enough to burst past Groq's free/on-demand tier limit (12,000 tokens/minute) even though total token usage wasn't unusual.
+
+`models/hf_client.py`'s `HFClient.generate()` and `.chat_with_tools()` — the two methods every node in the graph calls into Groq through — now route through `_call_with_retry`, which catches `groq.RateLimitError` and waits before retrying: preferring the response's `Retry-After` header, falling back to parsing Groq's own "try again in Xs" message, then a fixed 2s default, up to 3 retries before re-raising. This keeps the concurrency benefit intact instead of the two obvious alternatives — serializing every LLM call (loses the latency win the redesign exists for) or capping how many employees fan out at once (adds real complexity to dodge a free-tier-specific ceiling that a paid tier wouldn't hit). See `tests/test_hf_client_retry.py` for the retry-precedence, exhaustion, and non-rate-limit-errors-pass-through behavior this guarantees.
 
 ---
 
@@ -343,7 +355,7 @@ auditpilot/
 │       ├── aggregate_node.py     # 🆕 post-fan-out validation, graceful partial-failure handling
 │       └── report_node.py        # Draft audit worksheet generation — join key fixed to employee_id, no longer double-counts reducer fields
 ├── models/
-│   └── hf_client.py              # HFClient: BERT NER, BGE embeddings, Groq generation + tool calling
+│   └── hf_client.py              # HFClient: BERT NER, BGE embeddings, Groq generation + tool calling, 🆕 429 retry/backoff
 ├── mcp_servers/
 │   └── policycenter.py           # PolicyCenter MCP tools (mock + real REST stubs)
 ├── rag/
