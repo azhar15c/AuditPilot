@@ -1,5 +1,7 @@
 import os
+import random
 import re
+import threading
 import time
 from dotenv import load_dotenv
 from groq import Groq, RateLimitError
@@ -13,45 +15,72 @@ GENERATE_MODEL = "llama-3.3-70b-versatile"   # Groq model ID
 
 _MAX_RATE_LIMIT_RETRIES = 3
 _DEFAULT_BACKOFF_SECONDS = 2.0
+_JITTER_FRACTION = 0.3  # +/- 30% randomization on every wait
 _RETRY_HINT_RE = re.compile(r"try again in ([\d.]+)s", re.IGNORECASE)
+
+# Bounds how many Groq requests this process has in flight at once. The
+# multi-agent fan-out sends several employees' retrieval/classification/critic
+# calls concurrently by design (that's the redesign's whole latency win), but
+# Groq's free/on-demand tier caps at a modest tokens-per-minute budget shared
+# across the whole organization. Without a local cap, N employees' calls can
+# all fire at once, all get 429'd together, and — without jitter — all retry
+# at close to the same instant, recreating the exact same burst on every
+# retry round (a "thundering herd") instead of converging. Bounding
+# concurrency here converts "everyone fires and mostly fails" into "calls
+# queue locally and execute at a sustainable rate," which clears the token
+# budget faster in aggregate even though each individual call may wait
+# briefly for a slot.
+_MAX_CONCURRENT_GROQ_CALLS = 2
+_groq_call_slots = threading.Semaphore(_MAX_CONCURRENT_GROQ_CALLS)
 
 
 def _retry_after_seconds(exc: RateLimitError) -> float:
     """How long to wait before retrying, in order of preference: the response's
     Retry-After header, Groq's "try again in Xs" hint in the error message,
-    then a fixed fallback."""
+    then a fixed fallback. Jittered so concurrent callers that got rate-limited
+    in the same instant don't all retry in lockstep and re-trigger the same
+    burst on every round."""
+    base = _DEFAULT_BACKOFF_SECONDS
     header = exc.response.headers.get("retry-after") if exc.response is not None else None
     if header:
         try:
-            return float(header)
+            base = float(header)
         except ValueError:
             pass
-    match = _RETRY_HINT_RE.search(str(exc))
-    if match:
-        return float(match.group(1))
-    return _DEFAULT_BACKOFF_SECONDS
+    else:
+        match = _RETRY_HINT_RE.search(str(exc))
+        if match:
+            base = float(match.group(1))
+
+    jitter = base * _JITTER_FRACTION
+    return base + random.uniform(-jitter, jitter)
 
 
 def _call_with_retry(fn, *args, **kwargs):
-    """Call a Groq API function, retrying on 429 rate-limit responses.
+    """Call a Groq API function, bounding concurrency and retrying on 429
+    rate-limit responses.
 
     Concurrent per-employee LLM calls (the whole point of the multi-agent
     fan-out) can burst past Groq's per-minute token limit even when total
     usage is unremarkable, because the old sequential pipeline spread the
     same calls out over the run's full wall-clock time and this one doesn't.
-    Retrying with the wait time Groq itself reports keeps the concurrency
-    benefit instead of serializing everything or capping fan-out width to
-    dodge a free-tier-specific ceiling.
+    A semaphore caps how many requests are actually in flight at once (see
+    _MAX_CONCURRENT_GROQ_CALLS), and jittered retries on the ones that still
+    get rate-limited keep the concurrency benefit instead of serializing
+    everything or capping fan-out width to dodge a free-tier-specific ceiling.
     """
     for attempt in range(_MAX_RATE_LIMIT_RETRIES + 1):
-        try:
-            return fn(*args, **kwargs)
-        except RateLimitError as exc:
-            if attempt == _MAX_RATE_LIMIT_RETRIES:
-                raise
-            wait = _retry_after_seconds(exc) + 0.5  # small buffer past Groq's own estimate
-            print(f"Groq rate limit hit (attempt {attempt + 1}/{_MAX_RATE_LIMIT_RETRIES}); retrying in {wait:.1f}s")
-            time.sleep(wait)
+        with _groq_call_slots:
+            try:
+                return fn(*args, **kwargs)
+            except RateLimitError as exc:
+                if attempt == _MAX_RATE_LIMIT_RETRIES:
+                    raise
+                wait = _retry_after_seconds(exc)
+        # Sleep outside the semaphore so other queued callers get their turn
+        # to try while this one is backing off.
+        print(f"Groq rate limit hit (attempt {attempt + 1}/{_MAX_RATE_LIMIT_RETRIES}); retrying in {wait:.1f}s", flush=True)
+        time.sleep(wait)
 
 
 class HFClient:
