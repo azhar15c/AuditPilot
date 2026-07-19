@@ -495,6 +495,38 @@ _CSS = """
     border-top: 2px solid #e2e8f0;
     margin: 20px 0 16px;
 }
+
+/* tab navigation — Gradio's default tab bar reads as low-contrast against
+   this theme, so give it an explicit pill-style treatment matching the
+   hero/badge palette already used elsewhere */
+.tabs > .tab-nav {
+    background: #ffffff !important;
+    border: 1px solid #dbeafe !important;
+    border-radius: 12px !important;
+    padding: 6px !important;
+    margin-bottom: 20px !important;
+    gap: 6px !important;
+    box-shadow: 0 1px 4px rgba(30,64,175,0.08) !important;
+}
+.tabs > .tab-nav button {
+    font-size: 0.95rem !important;
+    font-weight: 700 !important;
+    color: #64748b !important;
+    padding: 11px 22px !important;
+    border-radius: 8px !important;
+    border: none !important;
+    background: transparent !important;
+    transition: background 0.15s ease, color 0.15s ease !important;
+}
+.tabs > .tab-nav button.selected {
+    background: #1e3a5f !important;
+    color: #ffffff !important;
+    box-shadow: 0 2px 8px rgba(30,58,95,0.3) !important;
+}
+.tabs > .tab-nav button:not(.selected):hover {
+    background: #eff6ff !important;
+    color: #1e3a5f !important;
+}
 """
 
 _THEME = gr.themes.Soft(
@@ -607,11 +639,13 @@ with gr.Blocks(title="AuditPilot", theme=_THEME, css=_CSS) as demo:
         with gr.Tab("🔍 Audit Trail", id=2):
             gr.HTML("""
                 <div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;
-                            padding:10px 14px;font-size:0.8rem;color:#1e3a5f;margin-bottom:14px;">
-                    Every agent step from this run — Supervisor, and each employee's Retrieval,
-                    Classification, and Critic. <strong>⚠ ERROR</strong> rows are agent
-                    failures caught for that employee only — the rest of the audit still
-                    completed around them; check the summary column for the real cause.
+                            padding:12px 16px;font-size:0.8rem;color:#1e3a5f;margin-bottom:14px;line-height:1.6;">
+                    <strong>What the AI actually did, step by step.</strong> One row per agent
+                    action — Supervisor's PolicyCenter lookup, then each employee's Retrieval,
+                    Classification, and Critic review — with how long it took and a plain-language summary.<br>
+                    <strong>⚠ ERROR</strong> means that one employee's step failed safely and was
+                    isolated: the rest of the audit still completed normally around it. Open the
+                    summary column on that row for the exact cause.
                 </div>
             """)
             trail_out = gr.Dataframe(
