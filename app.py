@@ -556,12 +556,7 @@ _THEME = gr.themes.Soft(
 with gr.Blocks(title="AuditPilot", theme=_THEME, css=_CSS) as demo:
 
     # hero
-    _demo_badge = (
-        '<span class="ap-badge" style="background:#f59e0b;border-color:#fbbf24;">'
-        '🎭 DEMO MODE — canned responses</span>'
-        if demo_fixtures.DEMO_MODE else ""
-    )
-    gr.HTML(f"""
+    gr.HTML("""
         <div class="ap-hero">
             <div>
                 <div class="ap-hero-title">⚡ AuditPilot</div>
@@ -571,7 +566,6 @@ with gr.Blocks(title="AuditPilot", theme=_THEME, css=_CSS) as demo:
                     generate a draft audit worksheet.
                 </div>
             </div>
-            {_demo_badge}
             <span class="ap-badge">WC Premium Audit · Texas</span>
         </div>
     """)
