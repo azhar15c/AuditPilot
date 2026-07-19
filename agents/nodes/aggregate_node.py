@@ -29,27 +29,41 @@ def aggregate_node(state: AuditState) -> dict:
 
     employee_records = state.get("employee_records", [])
     ncci_suggestions = state.get("ncci_suggestions", [])
+    audit_trail = state.get("audit_trail", [])
     classified_ids = {s["employee_id"] for s in ncci_suggestions}
+
+    # employee_pipeline_node logs an "error"-status step (agent="employee_pipeline")
+    # when it catches a branch failure — look those up so the placeholder below can
+    # show the real cause instead of a generic "didn't complete" message.
+    failure_reasons = {
+        step["employee_id"]: step["output_summary"]
+        for step in audit_trail
+        if step.get("agent") == "employee_pipeline" and step.get("status") == "error" and step.get("employee_id")
+    }
 
     missing_suggestions = []
     warning_steps = []
     for record in employee_records:
         employee_id = record["employee_id"]
         if employee_id not in classified_ids:
+            reason = failure_reasons.get(
+                employee_id, "This employee's classification branch did not complete.",
+            )
             missing_suggestions.append({
                 "employee_id": employee_id,
                 "employee": record.get("name", ""),
                 "ncci_code": None,
                 "classification": "NOT CLASSIFIED — retry required",
-                "rationale": "This employee's classification branch did not complete.",
+                "rationale": reason,
                 "confidence": "LOW",
             })
             warning_steps.append(make_agent_step(
                 agent="aggregate",
                 employee_id=employee_id,
                 input_summary=f"expected classification for {employee_id}, none found",
-                output_summary="marked NOT CLASSIFIED — retry required; audit continues for other employees",
+                output_summary=f"marked NOT CLASSIFIED — retry required ({reason}); audit continues for other employees",
                 duration_ms=0.0,
+                status="error",
             ))
 
     result: dict = {"current_step": "aggregate"}

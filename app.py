@@ -47,6 +47,8 @@ _EMPTY_DF = pd.DataFrame(
     columns=["name", "job_title", "suggested_ncci_code", "classification", "payroll", "confidence", "rationale", "critic_review"]
 )
 
+_EMPTY_TRAIL_DF = pd.DataFrame(columns=["status", "agent", "employee", "duration_ms", "summary"])
+
 
 # ── Event handlers ────────────────────────────────────────────────────────────
 
@@ -59,18 +61,21 @@ def _run_pipeline(filepath: str, progress) -> tuple:
         if state.get("error"):
             gr.Warning(f"Pipeline error: {state['error']}")
         progress(0.9, desc="Building results...")
-        result = _build_dataframe(state), state.get("audit_report", "")
+        trail_df = _build_audit_trail_dataframe(state)
+        if (trail_df["status"] == "⚠ ERROR").any():
+            gr.Warning("One or more agent steps failed — see the Audit Trail tab for details.")
+        result = _build_dataframe(state), state.get("audit_report", ""), trail_df
         progress(1.0, desc="Done.")
         return result
     except Exception as exc:
         gr.Warning(f"Pipeline failed: {exc}")
-        return _EMPTY_DF.copy(), ""
+        return _EMPTY_DF.copy(), "", _EMPTY_TRAIL_DF.copy()
 
 
 def run_audit(file, progress=gr.Progress()):
     if file is None:
         gr.Warning("Please upload a file before running the audit.")
-        return _EMPTY_DF.copy(), ""
+        return _EMPTY_DF.copy(), "", _EMPTY_TRAIL_DF.copy()
     progress(0.1, desc="Uploading document...")
     # Gradio 5 returns filepath as str; Gradio 4 returned a file-like object
     filepath = file if isinstance(file, str) else file.name
@@ -339,6 +344,34 @@ def _critic_review_label(critique: dict) -> str:
     return "✓ Approved"
 
 
+def _build_audit_trail_dataframe(data: dict) -> pd.DataFrame:
+    """Every agent invocation (Supervisor, per-employee Retrieval/Classification/
+    Critic, and Aggregate's own warning steps) writes a structured step into
+    state["audit_trail"] — this renders it directly instead of leaving it
+    reachable only through the raw API JSON response. A step's status is
+    "error" only when employee_pipeline_node caught an exception from that
+    employee's branch (see agents/employee_subgraph.py) — those rows are
+    exactly what would otherwise have silently crashed the whole audit, so
+    they're the first thing worth looking at when something goes wrong."""
+    trail = data.get("audit_trail", [])
+    records = data.get("employee_records", [])
+    name_by_id = {r.get("employee_id"): r.get("name", "") for r in records if r.get("employee_id")}
+
+    rows = []
+    for step in sorted(trail, key=lambda s: s.get("timestamp", "")):
+        employee_id = step.get("employee_id")
+        employee_label = name_by_id.get(employee_id, employee_id) or "—"
+        rows.append({
+            "status":      "⚠ ERROR" if step.get("status") == "error" else "✓ OK",
+            "agent":       step.get("agent", ""),
+            "employee":    employee_label,
+            "duration_ms": round(step.get("duration_ms", 0.0), 1),
+            "summary":     step.get("output_summary", ""),
+        })
+
+    return pd.DataFrame(rows) if rows else _EMPTY_TRAIL_DF.copy()
+
+
 # ── Theme & CSS ───────────────────────────────────────────────────────────────
 
 _CSS = """
@@ -550,9 +583,28 @@ with gr.Blocks(title="AuditPilot", theme=_THEME, css=_CSS) as demo:
             """)
             gr.Markdown(_AUDITOR_INSTRUCTIONS)
 
+        # ── Tab 3: Audit Trail ─────────────────────────────────────────────
+        with gr.Tab("🔍 Audit Trail", id=2):
+            gr.HTML("""
+                <div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;
+                            padding:10px 14px;font-size:0.8rem;color:#1e3a5f;margin-bottom:14px;">
+                    Every agent step from this run — Supervisor, and each employee's Retrieval,
+                    Classification, and Critic. <strong>⚠ ERROR</strong> rows are agent
+                    failures caught for that employee only — the rest of the audit still
+                    completed around them; check the summary column for the real cause.
+                </div>
+            """)
+            trail_out = gr.Dataframe(
+                headers=["status", "agent", "employee", "duration_ms", "summary"],
+                datatype=["str", "str", "str", "number", "str"],
+                label="Audit Trail",
+                interactive=False,
+                wrap=True,
+            )
+
     # ── Event wiring ──────────────────────────────────────────────────────────
 
-    _run_outputs = [df_out, report_out]
+    _run_outputs = [df_out, report_out, trail_out]
 
     run_btn.click(fn=run_audit, inputs=[file_input], outputs=_run_outputs)
     sample_btn.click(fn=run_sample_audit, inputs=[], outputs=_run_outputs)

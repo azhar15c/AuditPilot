@@ -38,6 +38,7 @@ class TestAggregateNodeDegradesGracefully:
             "error": None,
             "employee_records": [_record("EMP-000", "Alice"), _record("EMP-001", "Bob")],
             "ncci_suggestions": [_suggestion("EMP-000")],  # Bob's branch failed
+            "audit_trail": [],
         }
         result = aggregate_node(state)
 
@@ -46,10 +47,41 @@ class TestAggregateNodeDegradesGracefully:
         assert placeholder["employee_id"] == "EMP-001"
         assert placeholder["classification"] == "NOT CLASSIFIED — retry required"
         assert placeholder["ncci_code"] is None
+        assert placeholder["rationale"] == "This employee's classification branch did not complete.", (
+            "falls back to the generic message when no employee_pipeline error step is in the trail"
+        )
 
         assert len(result["audit_trail"]) == 1
         assert result["audit_trail"][0]["agent"] == "aggregate"
         assert result["audit_trail"][0]["employee_id"] == "EMP-001"
+        assert result["audit_trail"][0]["status"] == "error"
+
+    def test_missing_employee_placeholder_surfaces_the_real_failure_reason(self):
+        """When employee_pipeline_node caught a real exception and logged an
+        error-status step, aggregate_node should surface that actual reason in
+        the placeholder's rationale instead of the generic fallback message —
+        this is what makes the failure debuggable in the UI."""
+        state = {
+            "error": None,
+            "employee_records": [_record("EMP-000", "Alice"), _record("EMP-001", "Bob")],
+            "ncci_suggestions": [_suggestion("EMP-000")],  # Bob's branch failed
+            "audit_trail": [
+                {
+                    "agent": "employee_pipeline", "employee_id": "EMP-001",
+                    "input_summary": "employee='Bob'",
+                    "output_summary": "branch failed: RateLimitError: exhausted retries",
+                    "timestamp": "2026-01-01T00:00:00+00:00", "duration_ms": 42.0, "status": "error",
+                },
+            ],
+        }
+        result = aggregate_node(state)
+
+        placeholder = result["ncci_suggestions"][0]
+        assert placeholder["employee_id"] == "EMP-001"
+        assert "branch failed: RateLimitError: exhausted retries" in placeholder["rationale"]
+
+        assert result["audit_trail"][0]["status"] == "error"
+        assert "branch failed: RateLimitError: exhausted retries" in result["audit_trail"][0]["output_summary"]
 
     def test_never_fails_the_whole_run(self):
         state = {

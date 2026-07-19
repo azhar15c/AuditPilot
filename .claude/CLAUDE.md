@@ -119,9 +119,12 @@ Do not reference collection name `"ncci_docs"` — that is the old name, no long
 
 ## UI Structure (app.py)
 
-Two-tab Gradio Blocks layout:
+Three-tab Gradio Blocks layout (on `feature/multi-agent-redesign`; `main` still has the original two-tab v1 layout until that branch merges):
 - **Tab 1 — Audit Workspace**: file upload, sample button, Employee Classification Table (`gr.DataFrame`), Export CSV, Generate Audit Report button
 - **Tab 2 — Audit Report**: `gr.Markdown` with `.report-panel` CSS class (white background, forced dark text), Download Report PDF button, Push to PolicyCenter button (placeholder — shows `gr.Info` toast until GW credentials wired)
+- **Tab 3 — Audit Trail**: `gr.DataFrame` rendering `state["audit_trail"]` — one row per agent invocation (status, agent, employee, duration, summary). `⚠ ERROR` rows are per-employee branch failures caught at the `employee_pipeline_node` boundary (`agents/employee_subgraph.py`) — the rest of the audit completes around them instead of the whole run crashing.
+
+**Note:** this file otherwise still describes the v1 pipeline (`extract_node`/`classify_node`, the two-tab layout, etc.). The multi-agent redesign on `feature/multi-agent-redesign` supersedes most of it — see `docs/IMPLEMENTATION_PLAN.md` and the README's "v2 — Multi-agent architecture" section for the current, as-built shape. A full rewrite of this file to match is a separate task, not done as part of this change.
 
 CSS class `.report-panel` sets `color: #1a202c` explicitly on all child elements — required because `gr.themes.Soft` with `neutral_hue="slate"` otherwise makes text nearly invisible on white.
 

@@ -36,7 +36,7 @@ This branch (`feature/multi-agent-redesign`) migrates AuditPilot from a fixed, l
 | 2 | **D** — Critic/Verifier agent (blind review — structurally never reads Classification's `rationale`) | ✅ Done |
 | 3 | Final integration: Critic spliced into the subgraph, `api/main.py` response fields, `app.py` Critic status column | ✅ Done |
 
-`pytest tests/ -q` currently: **53 passed, 0 skipped, 0 failed.** Verified end-to-end through the real FastAPI `/audit/run` HTTP layer (not just the pipeline function directly) with a real file upload: 2 employees in → 2 classifications → 2 critic assessments (one `✓ Approved`, one `⚠ Flagged: ...` in a deliberately-engineered disagreement case) → 7 audit-trail entries → a rendered report, all with zero duplication.
+`pytest tests/ -q` currently: **57 passed, 0 skipped, 0 failed.** Verified end-to-end through the real FastAPI `/audit/run` HTTP layer (not just the pipeline function directly) with a real file upload: 2 employees in → 2 classifications → 2 critic assessments (one `✓ Approved`, one `⚠ Flagged: ...` in a deliberately-engineered disagreement case) → 7 audit-trail entries → a rendered report, all with zero duplication.
 
 Post-completion, two things were found running the sample audit live against the real APIs, both since fixed:
 - The retrieval loop was reworked to apply context engineering (accumulate/dedupe/compact/cap instead of overwrite-and-replay) — see [Retrieval, Classification & Critic Agents](#retrieval-classification--critic-agents-v2) below.
@@ -313,6 +313,12 @@ python app.py
 - The draft worksheet renders as formatted Markdown with: policyholder info, classification summary table, classification notes, subcontractor COI review, and auditor action items
 - Download as a formatted PDF with **Download Report PDF**
 - **Push to PolicyCenter** — scaffold is wired; connects automatically when `GW_PC_*` credentials are set in `.env`
+
+**Tab 3 — Audit Trail**
+
+- One row per agent invocation from the run — Supervisor's single PolicyCenter fetch, then each employee's Retrieval, Classification, and Critic steps, with agent name, employee, duration, and a summary
+- `⚠ ERROR` rows are agent failures caught for that one employee — `agents/employee_subgraph.py`'s `employee_pipeline_node` catches any unhandled exception from a branch (e.g. a Groq call that exhausted its retries) at the subgraph-invocation boundary, so it contributes nothing instead of crashing the whole run; `aggregate_node` then marks that employee `"NOT CLASSIFIED — retry required"` with the real failure reason surfaced in both the classification table's rationale and this tab's summary column, and the rest of the audit completes normally around it
+- This closes a real gap found by direct testing, not by inspection: before this fix, one employee's unhandled exception took down the entire run, including employees whose branches had already succeeded — confirmed by reproduction, then fixed, then re-confirmed with the same reproduction. See `tests/test_employee_subgraph.py` and `tests/test_aggregate_node.py::test_missing_employee_placeholder_surfaces_the_real_failure_reason`
 
 ---
 

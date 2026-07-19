@@ -13,12 +13,13 @@ from typing import Annotated, Optional, TypedDict
 
 
 class AgentStep(TypedDict):
-    agent: str  # "extraction" | "retrieval" | "classification" | "critic" | "supervisor" | "report" | "aggregate"
+    agent: str  # "extraction" | "retrieval" | "classification" | "critic" | "supervisor" | "report" | "aggregate" | "employee_pipeline"
     employee_id: Optional[str]
     input_summary: str
     output_summary: str
     timestamp: str
     duration_ms: float
+    status: str  # "ok" | "error" — lets observability UIs flag a step without string-sniffing output_summary
 
 
 class CaseInput(TypedDict):
@@ -82,8 +83,11 @@ def make_agent_step(
     input_summary: str,
     output_summary: str,
     duration_ms: float,
+    status: str = "ok",
 ) -> AgentStep:
-    """Shared factory for AgentStep entries so every node formats the audit trail identically."""
+    """Shared factory for AgentStep entries so every node formats the audit trail identically.
+    status defaults to "ok" so every existing caller is unaffected; pass status="error"
+    when logging a caught failure so observability UIs can flag it without parsing text."""
     return {
         "agent": agent,
         "employee_id": employee_id,
@@ -91,6 +95,7 @@ def make_agent_step(
         "output_summary": output_summary,
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "duration_ms": duration_ms,
+        "status": status,
     }
 
 
