@@ -192,7 +192,7 @@ Groq's free tier proved too fragile to depend on for a live demo — not from a 
 
 **What's real and what's canned:** the entire graph — Supervisor's fan-out, the per-employee subgraph, the retrieval agent's loop, classification's and critic's tool-call parsing, `aggregate_node`, report assembly — runs exactly as it does live. Only the network calls to Groq/HF are replaced. The fixture data itself isn't invented: Michael Torres's and James Wright's classifications (5551 Roofing, 5190 Electrical) and rationale text are copied verbatim from a real successful run against the sample document; Sarah Chen's (8810 Clerical Office Employees NOC) never completed live before quota ran out, so it's constructed from the same 8810-vs-8742 distinction `classification_agent.py`'s own system prompt already makes.
 
-**It's not hidden** — when active, the Gradio UI shows a `🎭 DEMO MODE — canned responses` badge in the header, so what's being shown is never presented as a live model call when it isn't one. Leave `AUDITPILOT_DEMO_MODE` unset (the default) for genuine live runs.
+**How to tell it's active:** there's no UI badge — check `AUDITPILOT_DEMO_MODE` in `.env`, or look for `status: "ok"` audit-trail rows with suspiciously round durations and the exact fixture rationale text quoted above. Leave `AUDITPILOT_DEMO_MODE` unset (the default) for genuine live runs.
 
 ---
 
@@ -364,6 +364,7 @@ Tests use `unittest.mock` — no real API calls or ChromaDB required.
 ```
 auditpilot/
 ├── app.py                        # Gradio UI + FastAPI server (single entry point)
+├── demo_fixtures.py              # 🆕 AUDITPILOT_DEMO_MODE — canned model responses for demo reliability
 ├── api/
 │   └── main.py                   # FastAPI routes + Gradio mount
 ├── agents/
@@ -392,10 +393,14 @@ auditpilot/
 │   ├── tx_wc_basic_manual.pdf        # Texas WC Basic Manual (RAG source)
 │   └── tx_wc_alpha_index.pdf         # Texas WC Alphabetical Index (RAG source)
 ├── docs/
-│   ├── MULTI_AGENT_REDESIGN_SPEC.md  # 🆕 full redesign spec — background, target architecture, rollout plan
-│   └── IMPLEMENTATION_PLAN.md        # 🆕 the staged build plan executed against that spec
-├── tests/                        # 🆕 pytest.ini + tool-boundary/fan-out/retrieval-convergence test suites added
-├── .env.example                  # Key template — copy to .env and fill in
+│   ├── MULTI_AGENT_REDESIGN_SPEC.md   # 🆕 full redesign spec — background, target architecture, rollout plan (annotated with a correction note — see below)
+│   ├── IMPLEMENTATION_PLAN.md         # 🆕 the staged build plan executed against that spec
+│   └── INTERVIEW_TALKING_POINTS.md    # 🆕 interview-prep writeup — architecture walkthrough, design tradeoffs, failure handling, Q&A
+├── tests/                        # 🆕 pytest.ini + fan-out/tool-boundary/retrieval-convergence/fault-isolation/demo-mode suites (62 passing)
+│   ├── test_employee_subgraph.py # 🆕 per-employee fault isolation — a branch exception never crashes the whole run
+│   ├── test_aggregate_node.py    # 🆕 partial-failure placeholder surfaces the real per-employee failure reason
+│   └── test_demo_fixtures.py     # 🆕 AUDITPILOT_DEMO_MODE — canned responses drive the real graph to a correct, zero-error result
+├── .env.example                  # Key template — copy to .env and fill in (🆕 includes AUDITPILOT_DEMO_MODE)
 ├── .gitignore                    # Excludes .env, venv/, chroma_db/
 └── requirements.txt
 ```
