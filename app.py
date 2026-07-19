@@ -1,6 +1,8 @@
 import os
 import pandas as pd
 
+import demo_fixtures
+
 # huggingface_hub >=0.17 removed HfFolder. Gradio 4.x oauth.py still imports
 # it, so inject a stub before `import gradio` runs. No-op when Gradio 5 is
 # installed because Gradio 5 doesn't reference HfFolder at all.
@@ -53,11 +55,23 @@ _EMPTY_TRAIL_DF = pd.DataFrame(columns=["status", "agent", "employee", "duration
 # ── Event handlers ────────────────────────────────────────────────────────────
 
 def _run_pipeline(filepath: str, progress) -> tuple:
-    """Call the LangGraph pipeline directly — no HTTP roundtrip."""
+    """Call the LangGraph pipeline directly — no HTTP roundtrip.
+
+    If AUDITPILOT_DEMO_MODE is set, the model-calling clients are patched
+    with realistic canned responses (demo_fixtures.py) before invoking the
+    real graph — Groq's free-tier rate limits proved too fragile to depend
+    on live for a demo, so this trades "genuinely live" for "guaranteed to
+    work," while every other part of the pipeline (extraction parsing, the
+    retrieval loop, classification/critic tool-call handling, fault
+    isolation, report assembly) still runs for real."""
     try:
         from agents.workflow import run_workflow
         progress(0.3, desc="Running intake and extraction...")
-        state = run_workflow(filepath)
+        if demo_fixtures.DEMO_MODE:
+            with demo_fixtures.demo_mode_patches():
+                state = run_workflow(filepath)
+        else:
+            state = run_workflow(filepath)
         if state.get("error"):
             gr.Warning(f"Pipeline error: {state['error']}")
         progress(0.9, desc="Building results...")
@@ -495,7 +509,12 @@ _THEME = gr.themes.Soft(
 with gr.Blocks(title="AuditPilot", theme=_THEME, css=_CSS) as demo:
 
     # hero
-    gr.HTML("""
+    _demo_badge = (
+        '<span class="ap-badge" style="background:#f59e0b;border-color:#fbbf24;">'
+        '🎭 DEMO MODE — canned responses</span>'
+        if demo_fixtures.DEMO_MODE else ""
+    )
+    gr.HTML(f"""
         <div class="ap-hero">
             <div>
                 <div class="ap-hero-title">⚡ AuditPilot</div>
@@ -505,6 +524,7 @@ with gr.Blocks(title="AuditPilot", theme=_THEME, css=_CSS) as demo:
                     generate a draft audit worksheet.
                 </div>
             </div>
+            {_demo_badge}
             <span class="ap-badge">WC Premium Audit · Texas</span>
         </div>
     """)

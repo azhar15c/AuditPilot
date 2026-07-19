@@ -78,7 +78,7 @@ class TestChatWithToolsRetriesOnRateLimit:
                 client.chat_with_tools([{"role": "user", "content": "hi"}], [], tool_choice="required")
 
         # 1 initial attempt + _MAX_RATE_LIMIT_RETRIES retries
-        assert client._gen.chat.completions.create.call_count == 4
+        assert client._gen.chat.completions.create.call_count == hf_client_module._MAX_RATE_LIMIT_RETRIES + 1
 
     def test_non_rate_limit_errors_are_not_retried(self):
         client = HFClient.__new__(HFClient)

@@ -13,24 +13,31 @@ NER_MODEL      = "dslim/bert-base-NER"
 EMBED_MODEL    = "BAAI/bge-large-en-v1.5"
 GENERATE_MODEL = "llama-3.3-70b-versatile"   # Groq model ID
 
-_MAX_RATE_LIMIT_RETRIES = 3
+_MAX_RATE_LIMIT_RETRIES = 6
 _DEFAULT_BACKOFF_SECONDS = 2.0
 _JITTER_FRACTION = 0.3  # +/- 30% randomization on every wait
 _RETRY_HINT_RE = re.compile(r"try again in ([\d.]+)s", re.IGNORECASE)
 
 # Bounds how many Groq requests this process has in flight at once. The
 # multi-agent fan-out sends several employees' retrieval/classification/critic
-# calls concurrently by design (that's the redesign's whole latency win), but
-# Groq's free/on-demand tier caps at a modest tokens-per-minute budget shared
-# across the whole organization. Without a local cap, N employees' calls can
-# all fire at once, all get 429'd together, and — without jitter — all retry
-# at close to the same instant, recreating the exact same burst on every
-# retry round (a "thundering herd") instead of converging. Bounding
-# concurrency here converts "everyone fires and mostly fails" into "calls
-# queue locally and execute at a sustainable rate," which clears the token
-# budget faster in aggregate even though each individual call may wait
-# briefly for a slot.
-_MAX_CONCURRENT_GROQ_CALLS = 2
+# calls concurrently at the GRAPH level by design (that's the redesign's whole
+# latency win — LangGraph still runs N employees' branches concurrently
+# regardless of this value), but Groq's free/on-demand tier caps at a modest
+# tokens-per-minute budget shared across the whole organization. Without a
+# local cap, N employees' calls can all fire at once, all get 429'd together,
+# and — without jitter — all retry at close to the same instant, recreating
+# the exact same burst on every retry round (a "thundering herd") instead of
+# converging.
+#
+# Set to 1 (serialize the actual Groq HTTP calls) rather than a higher number:
+# observed live on a fresh org's tight per-minute budget, 2 concurrent calls
+# still produced enough contention that some employees exhausted even 6
+# retries. Serializing the calls themselves (not the graph-level concurrency)
+# trades a bit of wall-clock time for reliability — worth it since a failed
+# branch is a visible, debuggable "NOT CLASSIFIED" row now (see
+# agents/employee_subgraph.py's fault-isolation boundary), but still better
+# to avoid triggering when the budget is this tight.
+_MAX_CONCURRENT_GROQ_CALLS = 1
 _groq_call_slots = threading.Semaphore(_MAX_CONCURRENT_GROQ_CALLS)
 
 

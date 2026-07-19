@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from agents.workflow import run_workflow
+import demo_fixtures
 
 app = FastAPI(title="AuditPilot API", version="0.1.0")
 
@@ -68,7 +69,11 @@ async def audit_run(file: UploadFile = File(...)) -> JSONResponse:
         tmp_path = tmp.name
 
     try:
-        state = run_workflow(tmp_path)
+        if demo_fixtures.DEMO_MODE:
+            with demo_fixtures.demo_mode_patches():
+                state = run_workflow(tmp_path)
+        else:
+            state = run_workflow(tmp_path)
     finally:
         os.unlink(tmp_path)
 
