@@ -89,7 +89,16 @@ class HFClient:
         groq_token = os.getenv("GROQ_API_KEY")
         # HF Serverless for NER + embeddings; Groq for LLM generation
         self._hf  = InferenceClient(provider="hf-inference", token=hf_token)
-        self._gen = Groq(api_key=groq_token)
+        # max_retries=0: the Groq SDK has its own built-in retry (default 2,
+        # with its own silent backoff sleep) that runs *inside* every
+        # .create() call, invisible to and uncoordinated with our own
+        # _call_with_retry below — the two layered on top of each other
+        # meant a single rate-limited call could silently retry up to 2
+        # times inside the SDK, then up to 3 more times in our wrapper, each
+        # with its own sleep, with no logging for the SDK's half at all.
+        # Disabling the SDK's layer makes _call_with_retry the single,
+        # fully-visible source of retry/backoff behavior.
+        self._gen = Groq(api_key=groq_token, max_retries=0)
 
     def extract_entities(self, text: str) -> list[dict]:
         """Run NER over text, return deduplicated [{entity, label, score}]."""
@@ -131,14 +140,25 @@ class HFClient:
         """Run a Groq chat completion with tool definitions.
         Returns the raw response so callers can inspect finish_reason and tool_calls.
         Pass tool_choice='required' to force the model to call a tool (structured output).
-        Retries on 429 rate-limit responses — see _call_with_retry."""
+        Retries on 429 rate-limit responses — see _call_with_retry.
+
+        max_tokens=2048 (not 1024): observed live — llama-3.3-70b's "reasoning"-style
+        tool arguments (e.g. evaluate_retrieval, finalize_critic_review) can run long
+        enough that 1024 truncates the generation mid-JSON, before the closing brace
+        and </function> tag are emitted. A truncated tool call isn't valid JSON, so
+        Groq's server-side parser rejects it outright with a 400 "Failed to call a
+        function" — this doesn't raise RateLimitError, so _call_with_retry's retry
+        loop never engages for it, and (since it's the same malformed request every
+        time) retrying wouldn't help anyway; the actual fix is giving the model
+        enough budget to finish the structured output it started.
+        """
         return _call_with_retry(
             self._gen.chat.completions.create,
             model=GENERATE_MODEL,
             messages=messages,
             tools=tools,
             tool_choice=tool_choice,
-            max_tokens=1024,
+            max_tokens=2048,
         )
 
 

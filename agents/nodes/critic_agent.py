@@ -29,7 +29,12 @@ _CRITIC_TOOL = {
         "parameters": {
             "type": "object",
             "properties": {
-                "agrees": {"type": "boolean", "description": "True if the raw excerpts support the proposed code"},
+                # type is [boolean, string], not just boolean: llama-3.3-70b sometimes
+                # emits a stringified "false"/"true" in structured tool-call output,
+                # and Groq's server-side schema validation 400s the whole request if
+                # the declared type is strictly boolean and the generation doesn't
+                # match exactly. _coerce_bool below handles the string form correctly.
+                "agrees": {"type": ["boolean", "string"], "description": "True if the raw excerpts support the proposed code"},
                 "concern": {"type": "string", "description": "If not agreeing (or agreeing with reservations), what specifically is unsupported or contradicted. Empty string if no concern."},
                 "recommended_action": {"type": "string", "enum": ["approve", "flag_for_review"], "description": "approve if the excerpts clearly support the code; flag_for_review otherwise"},
                 "critic_confidence": {"type": "string", "enum": ["HIGH", "MEDIUM", "LOW"], "description": "Your confidence in this verdict"},
@@ -126,6 +131,16 @@ def _format_citations(citations: list[dict]) -> str:
 
 # ── Result extraction ─────────────────────────────────────────────────────────
 
+def _coerce_bool(value) -> bool:
+    """bool("false") is True in Python — any non-empty string is truthy — so a
+    naive bool() cast silently inverts the model's answer whenever it emits a
+    stringified boolean instead of a real JSON boolean (a real, observed
+    llama-3.3-70b tool-calling quirk). Handle the string form explicitly."""
+    if isinstance(value, str):
+        return value.strip().lower() not in ("false", "0", "")
+    return bool(value)
+
+
 def _extract_result(response) -> dict:
     msg = response.choices[0].message
 
@@ -134,7 +149,7 @@ def _extract_result(response) -> dict:
             if tc.function.name == "finalize_critic_review":
                 args = json.loads(tc.function.arguments)
                 return {
-                    "agrees":            bool(args.get("agrees", False)),
+                    "agrees":            _coerce_bool(args.get("agrees", False)),
                     "concern":           args.get("concern", ""),
                     "recommended_action": args.get("recommended_action", "flag_for_review"),
                     "critic_confidence": args.get("critic_confidence", "LOW").upper(),

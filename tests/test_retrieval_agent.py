@@ -23,7 +23,7 @@ pytest.importorskip("agents.nodes.retrieval_agent")
 
 from unittest.mock import patch  # noqa: E402
 
-from agents.nodes.retrieval_agent import retrieval_agent  # noqa: E402
+from agents.nodes.retrieval_agent import _coerce_bool, retrieval_agent  # noqa: E402
 
 
 class _FakeFunction:
@@ -222,3 +222,61 @@ class TestRetrievalAgentContextEngineering:
             "round 2's prompt must NOT replay round 1's raw chunk text — only new chunks "
             "plus the compact scratchpad should be shown each round"
         )
+
+
+@pytest.mark.workstream_b
+class TestCoerceBool:
+    """Real bug, observed live: llama-3.3-70b sometimes emits a stringified
+    "false"/"true" instead of a JSON boolean in tool-call arguments. A naive
+    bool(x) cast is truthy for ANY non-empty string, including "false" —
+    silently inverting the model's actual answer."""
+
+    def test_string_false_is_false(self):
+        assert _coerce_bool("false") is False
+        assert _coerce_bool("False") is False
+        assert _coerce_bool("FALSE") is False
+        assert _coerce_bool("0") is False
+        assert _coerce_bool("") is False
+
+    def test_string_true_is_true(self):
+        assert _coerce_bool("true") is True
+        assert _coerce_bool("True") is True
+
+    def test_real_booleans_pass_through(self):
+        assert _coerce_bool(True) is True
+        assert _coerce_bool(False) is False
+
+
+@pytest.mark.workstream_b
+@pytest.mark.retrieval_convergence
+class TestRetrievalAgentHandlesStringifiedBoolean:
+    def test_stringified_false_is_treated_as_insufficient_not_sufficient(self, base_employee_task_state):
+        """End-to-end reproduction of the real failure: the model's tool call
+        args contain "sufficient": "false" (a JSON string, not a boolean) —
+        the naive bool() cast this codebase used to have would read that as
+        True (sufficient) since any non-empty string is truthy, incorrectly
+        ending the loop early on what the model actually judged insufficient."""
+        responses = [
+            _evaluate_response(sufficient=False, reasoning="stringified case", refined_query="narrower query"),
+            _evaluate_response(sufficient=True, reasoning="now sufficient", refined_query=""),
+        ]
+        # _evaluate_response json.dumps a real Python bool; simulate the
+        # actual observed API behavior by hand-building the JSON string with
+        # "sufficient" as a JSON string value instead.
+        import json as _json
+        stringified_args = _json.dumps({"sufficient": "false", "reasoning": "stringified case", "refined_query": "narrower query"})
+        responses[0].choices[0].message.tool_calls[0].function.arguments = stringified_args
+
+        with patch("agents.nodes.retrieval_agent._retriever") as mock_retriever, \
+             patch("agents.nodes.retrieval_agent._client") as mock_client:
+            mock_retriever.query.return_value = _SAMPLE_CITATIONS
+            mock_client.chat_with_tools.side_effect = responses
+
+            result = retrieval_agent(base_employee_task_state)
+
+        output = result["retrieval_output"]
+        assert output["iterations_run"] == 2, (
+            "a stringified 'false' must be treated as insufficient and trigger a second "
+            "round, not silently read as truthy/sufficient after just one round"
+        )
+        assert output["sufficiency_met"] is True  # round 2's real bool sufficient=True

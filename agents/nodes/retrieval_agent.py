@@ -33,7 +33,14 @@ _SUFFICIENCY_TOOL = {
         "parameters": {
             "type": "object",
             "properties": {
-                "sufficient": {"type": "boolean", "description": "True if these excerpts contain enough to confidently classify this employee"},
+                # type is [boolean, string] rather than just boolean: llama-3.3-70b
+                # sometimes emits a stringified "false"/"true" in structured tool-call
+                # output, and Groq's server-side schema validation rejects the whole
+                # request with a 400 if the declared type is strictly boolean and the
+                # model's generation doesn't match exactly. _coerce_bool below handles
+                # the string form correctly (bool("false") is a classic trap — any
+                # non-empty string is truthy in Python).
+                "sufficient": {"type": ["boolean", "string"], "description": "True if these excerpts contain enough to confidently classify this employee"},
                 "reasoning": {"type": "string", "description": "Why sufficient, or specifically why not (wrong section? too vague? missing a cross-referenced clause?)"},
                 "refined_query": {"type": "string", "description": "If not sufficient, a reformulated search query targeting the specific gap. Empty string if sufficient."},
             },
@@ -185,6 +192,16 @@ def _evaluate_sufficiency(
     return _extract_sufficiency(response)
 
 
+def _coerce_bool(value) -> bool:
+    """bool("false") is True in Python — any non-empty string is truthy — so a
+    naive bool() cast silently inverts the model's answer whenever it emits a
+    stringified boolean instead of a real JSON boolean (a real, observed
+    llama-3.3-70b tool-calling quirk). Handle the string form explicitly."""
+    if isinstance(value, str):
+        return value.strip().lower() not in ("false", "0", "")
+    return bool(value)
+
+
 def _extract_sufficiency(response) -> tuple[bool, str, str]:
     msg = response.choices[0].message
 
@@ -193,7 +210,7 @@ def _extract_sufficiency(response) -> tuple[bool, str, str]:
             if tc.function.name == "evaluate_retrieval":
                 args = json.loads(tc.function.arguments)
                 return (
-                    bool(args.get("sufficient", False)),
+                    _coerce_bool(args.get("sufficient", False)),
                     args.get("reasoning", ""),
                     args.get("refined_query") or "",
                 )

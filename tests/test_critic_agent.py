@@ -23,7 +23,7 @@ pytest.importorskip("agents.nodes.critic_agent")
 
 from unittest.mock import patch  # noqa: E402
 
-from agents.nodes.critic_agent import critic_agent  # noqa: E402
+from agents.nodes.critic_agent import _coerce_bool, critic_agent  # noqa: E402
 
 _MARKER_RATIONALE = "MARKER_RATIONALE_TEXT_12345"
 
@@ -154,3 +154,49 @@ class TestCriticBlindReview:
                 "Classification's rationale leaked into the Critic's prompt — "
                 "the Critic must perform a blind review."
             )
+
+
+@pytest.mark.workstream_d
+class TestCoerceBool:
+    """Same real bug as retrieval_agent.py: llama-3.3-70b sometimes emits a
+    stringified "false"/"true" instead of a JSON boolean in tool-call
+    arguments. A naive bool(x) cast is truthy for any non-empty string,
+    including "false" — silently inverting the model's actual verdict."""
+
+    def test_string_false_is_false(self):
+        assert _coerce_bool("false") is False
+        assert _coerce_bool("False") is False
+        assert _coerce_bool("0") is False
+        assert _coerce_bool("") is False
+
+    def test_string_true_is_true(self):
+        assert _coerce_bool("true") is True
+
+    def test_real_booleans_pass_through(self):
+        assert _coerce_bool(True) is True
+        assert _coerce_bool(False) is False
+
+
+@pytest.mark.workstream_d
+class TestCriticHandlesStringifiedBoolean:
+    def test_stringified_false_agrees_is_not_read_as_true(self, base_employee_task_state):
+        """End-to-end reproduction: 'agrees': 'false' (a JSON string, not a
+        boolean) must not be misread as truthy/agreeing."""
+        state = _state_with_outputs(
+            base_employee_task_state, "8810", "CLERICAL OFFICE EMPLOYEES NOC",
+            "ROOFING - ALL KINDS & DRIVERS. Code 5551.",
+        )
+        response = _critic_response(agrees=True, recommended_action="flag_for_review", tool_name="finalize_critic_review")
+        stringified_args = json.dumps({
+            "agrees": "false", "concern": "mismatch", "recommended_action": "flag_for_review", "critic_confidence": "HIGH",
+        })
+        response.choices[0].message.tool_calls[0].function.arguments = stringified_args
+
+        with patch("agents.nodes.critic_agent._client") as mock_client:
+            mock_client.chat_with_tools.return_value = response
+            result = critic_agent(state)
+
+        assert result["critic_output"]["agrees"] is False, (
+            "a stringified 'false' must be read as disagreement, not silently "
+            "treated as truthy/agreeing"
+        )
