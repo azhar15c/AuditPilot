@@ -1,8 +1,10 @@
 # AuditPilot Multi-Agent Redesign — Specification
 
 **Author:** Azhar Chaus
-**Status:** Draft for implementation
+**Status:** Draft for implementation — **partially superseded during implementation, see note below**
 **Purpose:** Redesign AuditPilot from a linear (Pipeline-pattern) LangGraph chain into a Supervisor-orchestrated, partially-parallel multi-agent system with a dedicated verification step — while using this build itself as a deliberate exercise in agentic coding (parallel Claude Code / Codex sessions, spec-first development).
+
+> **As-built correction:** Section 2.1's diagram and the 2.2 table below describe Extraction and Retrieval as case-level parallel agents ("Parallel with Retrieval" / "Parallel with Extraction"). That's **not** what was actually built. During implementation it became clear Retrieval needs job-specific details (job title, employer) that only exist *after* Extraction produces the employee list — a roofer and a bookkeeper need different search queries — so literal Extraction‖Retrieval parallelism isn't achievable for this domain. The as-built design instead runs Extraction once (document-level), then fans out **per employee**: N employees' `Retrieval → Classification → Critic` chains run concurrently against *each other*, not against Extraction. This is preserved here as the original spec/historical record; see `docs/IMPLEMENTATION_PLAN.md` and the README's "v2 — Multi-agent architecture" diagram for the accurate as-built shape.
 
 ---
 
@@ -41,6 +43,8 @@ In LangGraph/multi-agent terminology, this is a **Pipeline pattern** — the sim
 ### 2.1 Pattern
 
 **Supervisor pattern** as the top-level control flow, with a **fan-out** sub-step for independent work, and a **debate-style** verification step before human sign-off.
+
+> ⚠️ The diagram and table immediately below show Extraction and Retrieval as case-level parallel agents. **This is the original design, not the as-built one** — see the correction note at the top of this document. As built, the fan-out is per-employee (Extraction runs once, then N employees' Retrieval→Classification→Critic chains run concurrently).
 
 ```
                          ┌─────────────────────┐
