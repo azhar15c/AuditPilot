@@ -496,10 +496,19 @@ _CSS = """
     margin: 20px 0 16px;
 }
 
-/* tab navigation — Gradio's default tab bar reads as low-contrast against
-   this theme, so give it an explicit pill-style treatment matching the
-   hero/badge palette already used elsewhere */
-.tabs > .tab-nav {
+/* tab navigation — Gradio 5's real tab markup (verified against the
+   installed gradio/_frontend_code/tabs/shared/Tabs.svelte, not guessed):
+   .tabs > .tab-wrapper > .tab-container[role="tablist"] > button, with an
+   extra .tab-container.visually-hidden duplicate for layout measurement
+   that must NOT be styled or you'll see doubled/invisible tab artifacts.
+   There is no .tab-nav class in this Gradio version at all — that was the
+   bug in the previous attempt, not a specificity issue. */
+.tabs > .tab-wrapper {
+    height: auto !important;
+    padding-bottom: 0 !important;
+}
+.tabs > .tab-wrapper > .tab-container[role="tablist"] {
+    height: auto !important;
     background: #ffffff !important;
     border: 1px solid #dbeafe !important;
     border-radius: 12px !important;
@@ -508,7 +517,10 @@ _CSS = """
     gap: 6px !important;
     box-shadow: 0 1px 4px rgba(30,64,175,0.08) !important;
 }
-.tabs > .tab-nav button {
+.tabs > .tab-wrapper > .tab-container[role="tablist"]::after {
+    display: none !important; /* remove default bottom-border separator — replaced by the pill's own border */
+}
+.tabs > .tab-wrapper > .tab-container[role="tablist"] button {
     font-size: 0.95rem !important;
     font-weight: 700 !important;
     color: #64748b !important;
@@ -518,12 +530,15 @@ _CSS = """
     background: transparent !important;
     transition: background 0.15s ease, color 0.15s ease !important;
 }
-.tabs > .tab-nav button.selected {
+.tabs > .tab-wrapper > .tab-container[role="tablist"] button.selected {
     background: #1e3a5f !important;
     color: #ffffff !important;
     box-shadow: 0 2px 8px rgba(30,58,95,0.3) !important;
 }
-.tabs > .tab-nav button:not(.selected):hover {
+.tabs > .tab-wrapper > .tab-container[role="tablist"] button.selected::after {
+    display: none !important; /* remove default accent-color underline — replaced by the filled pill */
+}
+.tabs > .tab-wrapper > .tab-container[role="tablist"] button:not(.selected):hover {
     background: #eff6ff !important;
     color: #1e3a5f !important;
 }
@@ -639,13 +654,21 @@ with gr.Blocks(title="AuditPilot", theme=_THEME, css=_CSS) as demo:
         with gr.Tab("🔍 Audit Trail", id=2):
             gr.HTML("""
                 <div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;
-                            padding:12px 16px;font-size:0.8rem;color:#1e3a5f;margin-bottom:14px;line-height:1.6;">
-                    <strong>What the AI actually did, step by step.</strong> One row per agent
-                    action — Supervisor's PolicyCenter lookup, then each employee's Retrieval,
-                    Classification, and Critic review — with how long it took and a plain-language summary.<br>
-                    <strong>⚠ ERROR</strong> means that one employee's step failed safely and was
-                    isolated: the rest of the audit still completed normally around it. Open the
-                    summary column on that row for the exact cause.
+                            padding:14px 16px;margin-bottom:14px;">
+                    <p style="margin:0 0 8px 0;font-size:0.9rem;font-weight:700;color:#1e3a5f;">
+                        🔍 What the AI actually did, step by step
+                    </p>
+                    <p style="margin:0;font-size:0.8rem;color:#1e3a5f;line-height:1.6;">
+                        One row per agent action — Supervisor's PolicyCenter lookup, then each
+                        employee's Retrieval, Classification, and Critic review — with how long
+                        it took and a plain-language summary.
+                    </p>
+                    <p style="margin:10px 0 0 0;padding-top:10px;border-top:1px solid #bfdbfe;
+                               font-size:0.8rem;color:#92400e;line-height:1.6;">
+                        <strong>⚠ ERROR</strong> means that one employee's step failed safely and
+                        was isolated — the rest of the audit still completed normally around it.
+                        Open the summary column on that row for the exact cause.
+                    </p>
                 </div>
             """)
             trail_out = gr.Dataframe(
