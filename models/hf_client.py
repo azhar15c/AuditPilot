@@ -7,7 +7,7 @@ load_dotenv()
 
 NER_MODEL      = "dslim/bert-base-NER"
 EMBED_MODEL    = "BAAI/bge-large-en-v1.5"
-GENERATE_MODEL = "llama-3.3-70b-versatile"   # Groq model ID
+GENERATE_MODEL = "openai/gpt-oss-120b"   # Groq model ID — llama-3.3-70b-versatile was retired 2026-08-16, this is Groq's recommended replacement
 
 
 class HFClient:
@@ -41,7 +41,7 @@ class HFClient:
         return [list(map(float, vec)) for vec in raw]
 
     def generate(self, prompt: str, system: str) -> str:
-        """Generate a text response using Llama 3.3 70B via Groq."""
+        """Generate a text response via Groq (see GENERATE_MODEL)."""
         response = self._gen.chat.completions.create(
             model=GENERATE_MODEL,
             messages=[

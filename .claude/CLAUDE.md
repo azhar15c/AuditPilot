@@ -41,7 +41,7 @@ All model IDs and client setup are in `models/hf_client.py`:
 ```
 NER_MODEL      = "dslim/bert-base-NER"          # HF Serverless token-classification
 EMBED_MODEL    = "BAAI/bge-large-en-v1.5"       # HF Serverless feature-extraction
-GENERATE_MODEL = "llama-3.3-70b-versatile"       # Groq chat completions
+GENERATE_MODEL = "openai/gpt-oss-120b"           # Groq chat completions (llama-3.3-70b-versatile retired 2026-08-16)
 ```
 
 `HFClient` methods:
@@ -54,7 +54,7 @@ GENERATE_MODEL = "llama-3.3-70b-versatile"       # Groq chat completions
 
 ## classify_node — Agent Pattern
 
-This node does NOT use the full ReAct multi-turn tool-calling loop. `llama-3.3-70b-versatile` generates malformed tool call syntax during multi-turn loops (`[]` artifact in function names). The working pattern:
+This node does NOT use the full ReAct multi-turn tool-calling loop. The original `llama-3.3-70b-versatile` model this project shipped with generated malformed tool call syntax during multi-turn loops (`[]` artifact in function names), so the pattern below was kept even after the 2026-08-16 migration to `GENERATE_MODEL`'s current model. The working pattern:
 
 1. **Python fetches data** (deterministic, no LLM involvement):
    - RAG primary query (top-5 chunks from job title)

@@ -58,7 +58,7 @@ AuditPilot automates this process. Upload a payroll register PDF and the pipelin
 └──────┬──────────────────────┬──────────────────────────────-
        │                      │
   ┌────▼────┐          ┌──────▼────────────────────────────┐
-  │   HF    │          │  Groq  (llama-3.3-70b-versatile)  │
+  │   HF    │          │  Groq  (openai/gpt-oss-120b)      │
   │Serverless│          │                                   │
   │         │          │  • extract_node: employee record  │
   │ BERT NER│          │    extraction (name, job, wages)  │
@@ -90,11 +90,11 @@ AuditPilot automates this process. Upload a payroll register PDF and the pipelin
 |---|---|---|---|
 | **NER** | `dslim/bert-base-NER` | HF Serverless | Named entity extraction — persons, orgs, dates |
 | **Embeddings** | `BAAI/bge-large-en-v1.5` | HF Serverless | NCCI manual chunk retrieval via ChromaDB |
-| **Generation** | `llama-3.3-70b-versatile` | Groq (direct) | Employee record extraction, NCCI classification, report drafting |
+| **Generation** | `openai/gpt-oss-120b` | Groq (direct) | Employee record extraction, NCCI classification, report drafting |
 
 **Why RAG over fine-tuning:** NCCI classification rules update annually by state. The knowledge base can be refreshed with `python -m rag.ingest --source new_manual.pdf` — no retraining required.
 
-**Why BERT + LLM:** BERT handles fast entity extraction without burning Groq quota. The 70B model is reserved for reasoning tasks: structured extraction from tabular payroll formats, classification with rationale, and report generation.
+**Why BERT + LLM:** BERT handles fast entity extraction without burning Groq quota. The Groq model is reserved for reasoning tasks: structured extraction from tabular payroll formats, classification with rationale, and report generation.
 
 **Why the classify agent uses tool calling for output:** Structured output via `finalize_classification` with `tool_choice="required"` gives typed fields (code, title, rationale, confidence) without regex parsing. The LLM cannot hallucinate format — the tool schema enforces it.
 
@@ -109,7 +109,7 @@ AuditPilot automates this process. Upload a payroll register PDF and the pipelin
 3. **PolicyCenter MCP** — `get_prior_classifications` fetches codes from the prior audit period for consistency checking
 4. **LLM classification** — all context assembled in one prompt; model calls `finalize_classification` (structured tool output)
 
-Python controls the data-fetching sequence. The LLM handles reasoning — it does not decide what to look up. This separation avoids multi-turn tool-calling loops which are unreliable on `llama-3.3-70b-versatile`.
+Python controls the data-fetching sequence. The LLM handles reasoning — it does not decide what to look up. This separation avoids multi-turn tool-calling loops, which were unreliable on the original `llama-3.3-70b-versatile` model this project shipped with (see `GENERATE_MODEL` in `models/hf_client.py` for the current model).
 
 ---
 
