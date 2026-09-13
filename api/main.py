@@ -88,7 +88,7 @@ async def audit_run(file: UploadFile = File(...)) -> JSONResponse:
 async def audit_health() -> JSONResponse:
     return JSONResponse({
         "status": "ok",
-        "models": ["bert-NER", "bge-large", "llama-3.3-70b"],
+        "models": ["bert-NER", "bge-large", "gpt-oss-120b"],
     })
 
 
